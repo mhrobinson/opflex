@@ -81,7 +81,10 @@ typedef void (*loghandler_p)(const char* file, int line,
  */
 #define LOG_FATAL 50
 
+#ifdef __cplusplus
 extern "C" {
+#endif
+
     /**
      * Register a new log handler.  
      * 
@@ -93,7 +96,9 @@ extern "C" {
      */
     ofstatus ofloghandler_register(int level, loghandler_p handler);
 
+#ifdef __cplusplus
 } /* extern "C" */
+#endif
 
 /** @} cofloghandler */
 /** @} cmodb */

@@ -48,7 +48,9 @@
  */
 typedef ofobj_p ofmutator_p;
 
+#ifdef __cplusplus
 extern "C" {
+#endif
 
     /**
      * Create a new mutator that will work with the provided framework
@@ -83,9 +85,10 @@ extern "C" {
      * @return a status code
      */
     ofstatus ofmutator_commit(ofmutator_p mutator);
-    
 
+#ifdef __cplusplus
 } /* extern "C" */
+#endif
 
 /** @} mutator */
 /** @} cmodb */

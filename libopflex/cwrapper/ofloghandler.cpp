@@ -60,7 +60,7 @@ static OFLogHandler::Level getLevel(int level) {
 class COFLogHandler : public OFLogHandler {
 public:
     COFLogHandler(Level level, loghandler_p callback_)
-        : OFLogHandler(DEBUG), callback(callback_) {}
+        : OFLogHandler(level), callback(callback_) {}
 
     virtual ~COFLogHandler() {}
 
@@ -76,9 +76,9 @@ public:
     loghandler_p callback;
 };
 
-static COFLogHandler logHandler(OFLogHandler::NO_LOGGING, NULL);
-
 ofstatus ofloghandler_register(int level, loghandler_p callback) {
+    static COFLogHandler logHandler(OFLogHandler::NO_LOGGING, NULL);
+
     if (callback == NULL)
         return OF_EINVALID_ARG;
 

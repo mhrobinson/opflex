@@ -53,7 +53,9 @@ typedef ofobj_p ofmetadata_p;
  */
 typedef ofobj_p offramework_p;
 
+#ifdef __cplusplus
 extern "C" {
+#endif
 
     /**
      * Create a new OF framework instance.  You must eventually call
@@ -102,7 +104,9 @@ extern "C" {
      */
     ofstatus offramework_stop(offramework_p framework);
 
+#ifdef __cplusplus
 } /* extern "C" */
+#endif
 
 /** @} offramework */
 /** @} ccore */
