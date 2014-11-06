@@ -17,39 +17,39 @@ using opflex::logging::OFLogHandler;
 static int getLevel(OFLogHandler::Level level) {
     switch (level) {
     case OFLogHandler::INFO:
-        return LOG_INFO;
+        return OF_LOG_INFO;
         break;
     case OFLogHandler::WARNING:
-        return LOG_WARNING;
+        return OF_LOG_WARNING;
         break;
     case OFLogHandler::ERROR:
-        return LOG_ERROR;
+        return OF_LOG_ERROR;
         break;
     case OFLogHandler::FATAL:
-        return LOG_FATAL;
+        return OF_LOG_FATAL;
         break;
     case OFLogHandler::DEBUG:
     default:
-        return LOG_DEBUG;
+        return OF_LOG_DEBUG;
         break;
     }
 }
 
 static OFLogHandler::Level getLevel(int level) {
     switch (level) {
-    case LOG_INFO:
+    case OF_LOG_INFO:
         return OFLogHandler::INFO;
         break;
-    case LOG_WARNING:
+    case OF_LOG_WARNING:
         return OFLogHandler::WARNING;
         break;
-    case LOG_ERROR:
+    case OF_LOG_ERROR:
         return OFLogHandler::ERROR;
         break;
-    case LOG_FATAL:
+    case OF_LOG_FATAL:
         return OFLogHandler::FATAL;
         break;
-    case LOG_DEBUG:
+    case OF_LOG_DEBUG:
     default:
         return OFLogHandler::DEBUG;
         break;

@@ -59,27 +59,27 @@ typedef void (*loghandler_p)(const char* file, int line,
 /**
  * Debug log level
  */
-#define LOG_DEBUG 10
+#define OF_LOG_DEBUG 10
 
 /**
  * Info log level
  */
-#define LOG_INFO 20
+#define OF_LOG_INFO 20
 
 /**
  * Warning log level
  */
-#define LOG_WARNING 30
+#define OF_LOG_WARNING 30
 
 /**
  * Error log level
  */
-#define LOG_ERROR 40
+#define OF_LOG_ERROR 40
 
 /**
  * Fatal log level
  */
-#define LOG_FATAL 50
+#define OF_LOG_FATAL 50
 
 #ifdef __cplusplus
 extern "C" {

@@ -28,7 +28,7 @@ void handler(const char* file, int line,
 }
 
 BOOST_FIXTURE_TEST_CASE( init, MDFixture ) {
-    ofloghandler_register(LOG_DEBUG, handler);
+    ofloghandler_register(OF_LOG_DEBUG, handler);
 
     offramework_p framework = NULL;
     BOOST_CHECK(OF_IS_SUCCESS(offramework_create(&framework)));
