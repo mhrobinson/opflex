@@ -15,6 +15,7 @@
 #define MODB_ENUMINFO_H
 
 #include <string>
+#include <vector>
 #include "ConstInfo.h"
 #include "PropertyInfo.h"
 

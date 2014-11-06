@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
 #include <boost/make_shared.hpp>
 #include <boost/algorithm/string/split.hpp>
