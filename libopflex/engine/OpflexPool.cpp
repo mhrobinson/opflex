@@ -9,6 +9,8 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#include <vector>
+
 #include <boost/foreach.hpp>
 
 #include "opflex/engine/internal/OpflexPool.h"
