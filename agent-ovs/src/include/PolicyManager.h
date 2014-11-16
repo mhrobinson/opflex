@@ -135,6 +135,24 @@ public:
     void getSubnetsForDomain(const opflex::modb::URI& domainUri,
                              /* out */ boost::unordered_set<opflex::modb::URI>& uris);
 
+    /**
+     * Get the virtual-network identifier (vnid) associated with the
+     * specified endpoint group.
+     *
+     * @param eg the URI for the endpoint group
+     * @return vnid of the group if group is found and its vnid is set,
+     * boost::none otherwise
+     */
+    boost::optional<uint32_t> getVnidForGroup(const opflex::modb::URI& eg);
+
+    /**
+     * Check if an endpoint group exists
+     *
+     * @param eg the URI for the endpoint group to check
+     * @return true if group is found, false otherwise
+     */
+    bool groupExists(const opflex::modb::URI& eg);
+
 private:
     opflex::ofcore::OFFramework& framework;
 
@@ -142,6 +160,7 @@ private:
      * State and indices related to a given endpoint group
      */
     struct GroupState {
+        boost::optional<uint32_t> vnid;
         boost::optional<boost::shared_ptr<modelgbp::gbp::RoutingDomain> > routingDomain;
         boost::optional<boost::shared_ptr<modelgbp::gbp::BridgeDomain> > bridgeDomain;
         boost::optional<boost::shared_ptr<modelgbp::gbp::FloodDomain> > floodDomain;
@@ -200,9 +219,10 @@ private:
      * URI.  You must hold a state lock to call this function.
      *
      * @param egURI the URI of the EPG that should be updated
+     * @param toRemove set to true is the group was removed
      * @return true if the endpoint group was updated
      */
-    bool updateEPGDomains(const opflex::modb::URI& egURI);
+    bool updateEPGDomains(const opflex::modb::URI& egURI, bool& toRemove);
 
     /**
      * Notify policy listeners about an update to the forwarding

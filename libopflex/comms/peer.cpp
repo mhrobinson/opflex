@@ -6,11 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <opflex/comms/comms-internal.hpp>
-#include <opflex/rpc/message_factory.inl.hpp>
+#include <yajr/internal/comms.hpp>
+#include <yajr/rpc/message_factory.inl.hpp>
 #include <rapidjson/error/en.h>
+#include <yajr/rpc/internal/json_stream_wrappers.hpp>
 
-namespace opflex { namespace comms { namespace internal {
+namespace yajr { namespace comms { namespace internal {
 
 ::boost::atomic<size_t> Peer::counter(0);
 ::boost::atomic<size_t> Peer::LoopData::counter(0);
@@ -25,6 +26,11 @@ std::ostream& operator<< (std::ostream& os, Peer const * p) {
         << p->peerType()
 #endif
         << "[" << p->uvRefCnt_ << "]";
+}
+
+std::ostream& operator<< (std::ostream& os, Peer::LoopData const * lD) {
+    return os << "{" << reinterpret_cast<void const *>(lD) << "}"
+        << "[" << lD->refCount_ << "]";
 }
 
 CommunicationPeer * Peer::get(uv_write_t * r) {
@@ -82,8 +88,8 @@ class EchoGen {
 };
 
 void CommunicationPeer::sendEchoReq() {
-    opflex::rpc::OutReq<&rpc::method::echo> * req =
-        opflex::rpc::MessageFactory::
+    yajr::rpc::OutReq<&rpc::method::echo> * req =
+        yajr::rpc::MessageFactory::
         newReq<&rpc::method::echo>(*this, EchoGen(*this));
 
     req -> send();
@@ -131,7 +137,7 @@ void CommunicationPeer::timeout() {
 
 }
 
-opflex::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() {
+yajr::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() {
 
     LOG(DEBUG)
         << "peer = " << this
@@ -139,7 +145,7 @@ opflex::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() {
     ;
 
     bumpLastHeard();
-    opflex::comms::internal::wrapper::IStreamWrapper is(ssIn_);
+    yajr::comms::internal::wrapper::IStreamWrapper is(ssIn_);
 
     docIn_.ParseStream(is);
     if (docIn_.HasParseError()) {
@@ -158,7 +164,143 @@ opflex::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() {
     ssIn_.~basic_stringstream();
     new ((void *) &ssIn_) std::stringstream();
 
-    return opflex::rpc::MessageFactory::getInboundMessage(*this, docIn_);
+    return yajr::rpc::MessageFactory::getInboundMessage(*this, docIn_);
+}
+
+bool Peer::__checkInvariants() const {
+    return true;
+}
+
+bool CommunicationPeer::__checkInvariants() const {
+
+    if (status_ != kPS_ONLINE) {
+        return internal::Peer::__checkInvariants();
+    }
+
+    if (!!keepAliveInterval_ != !!uv_is_active((uv_handle_t *)&keepAliveTimer_)) {
+        LOG(DEBUG) << this
+            << " keepAliveInterval_ = " << keepAliveInterval_
+            << " keepAliveTimer_ = " << (
+            uv_is_active((uv_handle_t *)&keepAliveTimer_) ? "" : "in")
+            << "active"
+        ;
+    }
+    return
+        (!!keepAliveInterval_ == !!uv_is_active((uv_handle_t *)&keepAliveTimer_))
+
+        &&
+
+        internal::Peer::__checkInvariants();
+}
+
+bool ActivePeer::__checkInvariants() const {
+    return CommunicationPeer::__checkInvariants();
+}
+
+bool PassivePeer::__checkInvariants() const {
+    return CommunicationPeer::__checkInvariants();
+}
+
+bool ListeningPeer::__checkInvariants() const {
+    return internal::Peer::__checkInvariants();
+}
+
+void CommunicationPeer::dumpIov(std::stringstream & dbgLog, std::vector<iovec> const & iov) {
+    for (size_t i=0; i < iov.size(); ++i) {
+        iovec const & j = iov[i];
+        dbgLog
+            << "\n IOV "
+            << i << ": "
+            << j.iov_base
+            << "+"
+            << j.iov_len
+        ;
+        std::copy((char*)j.iov_base,
+                  (char*)j.iov_base + j.iov_len,
+                  std::ostream_iterator<char>(dbgLog, ""));
+    }
+}
+
+void CommunicationPeer::logDeque() const {
+    static std::string oldDbgLog;
+    std::stringstream dbgLog;
+    std::string newDbgLog;
+
+    dbgLog
+        << "\n IOV "
+        << this
+    ;
+
+    if (pendingBytes_) {
+        dbgLog << "\n IOV Pending:";
+        dumpIov(dbgLog,
+            more::get_iovec(
+                s_.deque_.begin(),
+                s_.deque_.begin() + pendingBytes_
+            )
+        );
+    }
+
+    dbgLog << "\n IOV Full:";
+    dumpIov(dbgLog, more::get_iovec(
+                s_.deque_.begin(),
+                s_.deque_.end()));
+
+    newDbgLog = dbgLog.str();
+
+    if (oldDbgLog != newDbgLog) {
+        oldDbgLog = newDbgLog;
+
+        LOG(DEBUG) << newDbgLog;
+    }
+}
+
+void CommunicationPeer::onWrite() {
+
+    LOG(DEBUG) << "Write completed for " << pendingBytes_ << " bytes";
+
+    s_.deque_.erase(
+            s_.deque_.begin(),
+            s_.deque_.begin() + pendingBytes_
+    );
+
+    pendingBytes_ = 0;
+
+    write(); /* kick the can */
+}
+
+int CommunicationPeer::write() const {
+
+    if (pendingBytes_) {
+
+        LOG(DEBUG) << "Waiting for " << pendingBytes_ << " bytes to flush";
+        return 0;
+    }
+
+    pendingBytes_ = s_.deque_.size();
+
+    if (!pendingBytes_) {
+
+        LOG(DEBUG) << "Nothing left to be sent!";
+
+        return 0;
+    }
+
+    std::vector<iovec> iov =
+        more::get_iovec(
+                s_.deque_.begin(),
+                s_.deque_.end()
+        );
+
+    logDeque();
+
+    /* FIXME: handle errors!!! */
+    return uv_write(&write_req_,
+            (uv_stream_t*) &handle_,
+            (uv_buf_t*)&iov[0],
+            iov.size(),
+            on_write);
+
 }
 
 }}}

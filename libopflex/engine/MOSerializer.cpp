@@ -21,6 +21,7 @@ namespace internal {
 
 using modb::ObjectStore;
 using modb::ClassInfo;
+using modb::EnumInfo;
 using modb::PropertyInfo;
 using modb::URI;
 using modb::MAC;
@@ -34,7 +35,8 @@ using std::vector;
 using std::string;
 using boost::unordered_set;
 
-MOSerializer::MOSerializer(ObjectStore* store_) : store(store_) {
+MOSerializer::MOSerializer(ObjectStore* store_, Listener* listener_) 
+    : store(store_), listener(listener_) {
 
 }
 
@@ -68,6 +70,29 @@ void MOSerializer::deserialize_ref(modb::mointernal::StoreClient& client,
     }
 }
 
+void MOSerializer::deserialize_enum(modb::mointernal::StoreClient& client,
+                                    const PropertyInfo& pinfo,
+                                    const rapidjson::Value& pvalue,
+                                    ObjectInstance& oi,
+                                    bool scalar) {
+    if (!pvalue.IsString()) return;
+    const EnumInfo& ei = pinfo.getEnumInfo();
+    try {
+        uint64_t val = ei.getIdByName(pvalue.GetString());
+        if (scalar) {
+            oi.setUInt64(pinfo.getId(), val);
+        } else {
+            oi.addUInt64(pinfo.getId(), val);
+        }
+        
+    } catch (std::out_of_range e) {
+        LOG(WARNING) << "No value of type "
+                     << ei.getName()
+                     << " found for name "
+                     << pvalue.GetString();
+    }
+}
+
 void MOSerializer::deserialize(const rapidjson::Value& mo,
                                modb::mointernal::StoreClient& client,
                                bool replaceChildren,
@@ -86,7 +111,6 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
         const ClassInfo& ci = store->getClassInfo(classv.GetString());
         shared_ptr<ObjectInstance> oi = 
             make_shared<ObjectInstance>(ci.getId());
-        
         if (mo.HasMember("properties")) {
             const Value& properties = mo["properties"];
             if (properties.IsArray()) {
@@ -100,7 +124,6 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                     const Value& pname = prop["name"];
                     if (!pname.IsString())
                         continue;
-
                     const Value& pvalue = prop["data"];
 
                     try {
@@ -129,7 +152,7 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                                     deserialize_ref(client, pinfo, v, *oi, false);
                                 }
                             } else {
-                                deserialize_ref(client, pinfo, pvalue, *oi, false);
+                                deserialize_ref(client, pinfo, pvalue, *oi, true);
                             }
                             break;
                         case PropertyInfo::S64:
@@ -150,6 +173,18 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                         case PropertyInfo::ENUM16:
                         case PropertyInfo::ENUM32:
                         case PropertyInfo::ENUM64:
+                            {
+                                if (pinfo.getCardinality() == PropertyInfo::VECTOR) {
+                                    if (!pvalue.IsArray()) continue;
+                                    for (SizeType j = 0; j < pvalue.Size(); ++j) {
+                                        const Value& v = pvalue[j];
+                                        deserialize_enum(client, pinfo, v, *oi, false);
+                                    }
+                                } else {
+                                    deserialize_enum(client, pinfo, pvalue, *oi, true);
+                                }
+                            }
+                            break;
                         case PropertyInfo::U64:
                             if (pinfo.getCardinality() == PropertyInfo::VECTOR) {
                                 if (!pvalue.IsArray()) continue;
@@ -173,7 +208,6 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                                     oi->addMAC(pinfo.getId(), MAC(v.GetString()));
                                 }
                             } else {
-                                if (!pvalue.IsString()) continue;
                                 oi->setMAC(pinfo.getId(),
                                            MAC(pvalue.GetString()));
                             }
@@ -198,9 +232,12 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
             }
         }
         
-        client.put(ci.getId(), uri, oi);
-        if (notifs)
-            client.queueNotification(ci.getId(), uri, *notifs);
+        if (client.putIfModified(ci.getId(), uri, oi)) {
+            if (listener)
+                listener->remoteObjectUpdated(ci.getId(), uri);
+            if (notifs)
+                client.queueNotification(ci.getId(), uri, *notifs);
+        }
         if (mo.HasMember("parent_name") && mo.HasMember("parent_subject")) {
             const Value& pname = mo["parent_name"];
             const Value& psubj = mo["parent_subject"];
@@ -218,15 +255,16 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                     boost::shared_ptr<const ObjectInstance> parentoi =
                         client.get(parent_class.getId(), parent_uri);
 
-                    client.addChild(parent_class.getId(),
-                                    parent_uri,
-                                    parent_prop.getId(),
-                                    ci.getId(),
-                                    uri);
-                    if (notifs)
-                        client.queueNotification(parent_class.getId(),
-                                                 parent_uri,
-                                                 *notifs);
+                    if (client.addChild(parent_class.getId(),
+                                        parent_uri,
+                                        parent_prop.getId(),
+                                        ci.getId(),
+                                        uri)) {
+                        if (notifs)
+                            client.queueNotification(parent_class.getId(),
+                                                     parent_uri,
+                                                     *notifs);
+                    }
                 } catch (std::out_of_range e) {
                     // no parent class, property, or object instance
                     // found

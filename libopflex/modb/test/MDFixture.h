@@ -45,15 +45,26 @@ public:
                                                  PropertyInfo::COMPOSITE, 
                                                  4, 
                                                  PropertyInfo::VECTOR))
-                                   (PropertyInfo(12, "class5",
+                                   (PropertyInfo(24, "class5",
                                                  PropertyInfo::COMPOSITE, 
                                                  5, 
+                                                 PropertyInfo::VECTOR))
+                                   (PropertyInfo(22, "class8",
+                                                 PropertyInfo::COMPOSITE, 
+                                                 4, 
+                                                 PropertyInfo::VECTOR))
+                                   (PropertyInfo(23, "class9",
+                                                 PropertyInfo::COMPOSITE, 
+                                                 9, 
                                                  PropertyInfo::VECTOR)),
                                std::vector<prop_id_t>()))
-                    (ClassInfo(2, ClassInfo::POLICY, "class2", "owner1",
+                    (ClassInfo(2, ClassInfo::LOCAL_ENDPOINT, "class2", "owner1",
                                list_of 
                                    (PropertyInfo(4, "prop4", 
                                                  PropertyInfo::S64, 
+                                                 PropertyInfo::SCALAR))
+                                   (PropertyInfo(15, "prop15", 
+                                                 PropertyInfo::MAC, 
                                                  PropertyInfo::SCALAR))
                                    (PropertyInfo(5, "class3", 
                                                  PropertyInfo::COMPOSITE, 
@@ -67,6 +78,9 @@ public:
                                                  PropertyInfo::SCALAR))
                                    (PropertyInfo(7, "prop7", 
                                                  PropertyInfo::STRING, 
+                                                 PropertyInfo::SCALAR))
+                                   (PropertyInfo(16, "prop16", 
+                                                 PropertyInfo::STRING, 
                                                  PropertyInfo::SCALAR)),
                                list_of(6)(7)))
                     (ClassInfo(4, ClassInfo::POLICY, "class4", "owner2",
@@ -77,9 +91,13 @@ public:
                                    (PropertyInfo(12, "class6",
                                                  PropertyInfo::COMPOSITE, 
                                                  6, 
+                                                 PropertyInfo::VECTOR))
+                                   (PropertyInfo(25, "class7",
+                                                 PropertyInfo::COMPOSITE, 
+                                                 7, 
                                                  PropertyInfo::VECTOR)),
                                list_of(9)))
-                    (ClassInfo(5, ClassInfo::LOCAL_ONLY, "class5", "owner2",
+                    (ClassInfo(5, ClassInfo::RELATIONSHIP, "class5", "owner2",
                                list_of 
                                    (PropertyInfo(10, "prop10", 
                                                  PropertyInfo::STRING,
@@ -90,10 +108,10 @@ public:
                                list_of(10)))
                     (ClassInfo(6, ClassInfo::POLICY, "class6", "owner2",
                                list_of 
-                                   (PropertyInfo(13, "prop12",
+                                   (PropertyInfo(13, "prop13",
                                                  PropertyInfo::STRING, 
                                                  PropertyInfo::SCALAR)),
-                               list_of(12)))
+                               list_of(13)))
                     (ClassInfo(7, ClassInfo::LOCAL_ONLY, "class7", "owner2",
                                list_of
                                    (PropertyInfo(14, "prop14",
@@ -104,6 +122,31 @@ public:
                                                               (ConstInfo("off", 0))
                                                               (ConstInfo("on", 1))))),
                                list_of(14)))
+                    (ClassInfo(8, ClassInfo::REMOTE_ENDPOINT, "class8", "owner2",
+                               list_of 
+                                   (PropertyInfo(17, "prop17",
+                                                 PropertyInfo::STRING, 
+                                                 PropertyInfo::SCALAR))
+                                   (PropertyInfo(20, "class10",
+                                                 PropertyInfo::COMPOSITE, 
+                                                 10, 
+                                                 PropertyInfo::VECTOR)),
+                               list_of(17)))
+                    (ClassInfo(9, ClassInfo::RELATIONSHIP, "class9", "owner2",
+                               list_of 
+                                   (PropertyInfo(18, "prop18", 
+                                                 PropertyInfo::STRING,
+                                                 PropertyInfo::SCALAR))
+                                   (PropertyInfo(19, "class8Ref", 
+                                                 PropertyInfo::REFERENCE,
+                                                 PropertyInfo::SCALAR)),
+                               list_of(18)))
+                    (ClassInfo(10, ClassInfo::REMOTE_ENDPOINT, "class10", "owner2",
+                               list_of 
+                                   (PropertyInfo(21, "prop21",
+                                                 PropertyInfo::STRING, 
+                                                 PropertyInfo::SCALAR)),
+                               list_of(21)))
              ) { }
 
     ModelMetadata md;

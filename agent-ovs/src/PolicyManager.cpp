@@ -91,6 +91,7 @@ void PolicyManager::getSubnetsForDomain(const URI& domainUri,
 
 optional<shared_ptr<modelgbp::gbp::RoutingDomain> >
 PolicyManager::getRDForGroup(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return boost::none;
     return it->second.routingDomain;
@@ -98,6 +99,7 @@ PolicyManager::getRDForGroup(const opflex::modb::URI& eg) {
 
 optional<shared_ptr<modelgbp::gbp::BridgeDomain> >
 PolicyManager::getBDForGroup(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return boost::none;
     return it->second.bridgeDomain;
@@ -105,6 +107,7 @@ PolicyManager::getBDForGroup(const opflex::modb::URI& eg) {
 
 optional<shared_ptr<modelgbp::gbp::FloodDomain> >
 PolicyManager::getFDForGroup(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return boost::none;
     return it->second.floodDomain;
@@ -112,6 +115,7 @@ PolicyManager::getFDForGroup(const opflex::modb::URI& eg) {
 
 void PolicyManager::getSubnetsForGroup(const opflex::modb::URI& eg,
                                        /* out */ subnet_vector_t& subnets) {
+    lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return;
     BOOST_FOREACH(const GroupState::subnet_map_t::value_type& v,
@@ -153,17 +157,25 @@ void PolicyManager::updateSubnetIndex() {
     }
 }
 
-bool PolicyManager::updateEPGDomains(const URI& egURI) {
+bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
     using namespace modelgbp;
     using namespace modelgbp::gbp;
+    using namespace modelgbp::gbpe;
 
     GroupState& gs = group_map[egURI];
 
     optional<shared_ptr<EpGroup> > epg = 
         EpGroup::resolve(framework, egURI);
     if (!epg) {
-        group_map.erase(egURI);
+        toRemove = true;
         return true;
+    }
+    toRemove = false;
+
+    optional<shared_ptr<InstContext> > groupInstCtx;
+    groupInstCtx = epg.get()->resolveGbpeInstContext();
+    if (groupInstCtx) {
+        gs.vnid = groupInstCtx.get()->getVnid();
     }
 
     optional<shared_ptr<RoutingDomain> > newrd;
@@ -289,6 +301,18 @@ bool PolicyManager::updateEPGDomains(const URI& egURI) {
     return updated;
 }
 
+boost::optional<uint32_t>
+PolicyManager::getVnidForGroup(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
+    group_map_t::iterator it = group_map.find(eg);
+    return it != group_map.end() ? it->second.vnid : boost::none;
+}
+
+bool PolicyManager::groupExists(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
+    return group_map.find(eg) != group_map.end();
+}
+
 PolicyManager::DomainListener::DomainListener(PolicyManager& pmanager_)
     : pmanager(pmanager_) {}
 PolicyManager::DomainListener::~DomainListener() {}
@@ -303,9 +327,13 @@ void PolicyManager::DomainListener::objectUpdated(class_id_t class_id,
         pmanager.group_map[uri];
     }
     unordered_set<URI> notify;
-    BOOST_FOREACH(const group_map_t::value_type& v, pmanager.group_map) {
-        if (pmanager.updateEPGDomains(v.first))
-            notify.insert(v.first);
+    for (PolicyManager::group_map_t::iterator itr = pmanager.group_map.begin();
+         itr != pmanager.group_map.end(); ) {
+        bool toRemove = false;
+        if (pmanager.updateEPGDomains(itr->first, toRemove)) {
+            notify.insert(itr->first);
+        }
+        itr = (toRemove ? pmanager.group_map.erase(itr) : ++itr);
     }
     guard.unlock();
     BOOST_FOREACH(const URI& u, notify) {

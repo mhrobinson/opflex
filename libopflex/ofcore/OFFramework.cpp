@@ -17,25 +17,21 @@
 #include "opflex/engine/Processor.h"
 #include "opflex/modb/internal/ObjectStore.h"
 #include "opflex/logging/internal/logging.hpp"
-#include "opflex/comms/comms.hpp"
 
 namespace opflex {
 namespace ofcore {
 
-const std::string OFFramework::Config::CONFIG_OPFLEX_PEER("opflex.peer");
-
-using boost::property_tree::ptree;
 using namespace boost::assign;
 
 class OFFramework::OFFrameworkImpl {
 public:
-    OFFrameworkImpl() : processor(&db) { } 
+    OFFrameworkImpl() : processor(&db), started(false) { } 
     ~OFFrameworkImpl() {}
 
     modb::ObjectStore db;
     engine::Processor processor;
-    ptree properties;
     uv_key_t mutator_key;
+    bool started;
 };
 
 OFFramework::OFFramework() : pimpl(new OFFrameworkImpl()) {
@@ -65,16 +61,29 @@ void OFFramework::setModel(const modb::ModelMetadata& model) {
 
 void OFFramework::start() {
     LOG(DEBUG) << "Starting OpFlex Framework";
-
+    pimpl->started = true;
     pimpl->db.start();
     pimpl->processor.start();
 }
 
 void OFFramework::stop() {
-    LOG(DEBUG) << "Stopping OpFlex Framework";
+    if (pimpl->started) {
+        LOG(DEBUG) << "Stopping OpFlex Framework";
+        
+        pimpl->processor.stop();
+        pimpl->db.stop();
+    }
+    pimpl->started = false;
+}
 
-    pimpl->processor.stop();
-    pimpl->db.stop();
+void OFFramework::setOpflexIdentity(const std::string& name,
+                                    const std::string& domain) {
+    pimpl->processor.setOpflexIdentity(name, domain);
+}
+
+void OFFramework::addPeer(const std::string& hostname,
+                          int port) {
+    pimpl->processor.addPeer(hostname, port);
 }
 
 void MockOFFramework::start() {
@@ -96,10 +105,6 @@ modb::ObjectStore& OFFramework::getStore() {
 OFFramework& OFFramework::defaultInstance() {
     static OFFramework staticInstance;
     return staticInstance;
-}
-
-void OFFramework::setProperties(const ptree& properties_) {
-    pimpl->properties = properties_;
 }
 
 void OFFramework::registerTLMutator(modb::Mutator& mutator) {

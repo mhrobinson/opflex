@@ -12,27 +12,37 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
+OVS_ADDL_CFLAGS = \
+	-D__STDC_LIMIT_MACROS \
+	-D__STDC_CONSTANT_MACROS \
+	-fpermissive
+
 AM_CPPFLAGS = $(BOOST_CPPFLAGS) \
-	-I$(top_srcdir)/src/include
+	-I$(top_srcdir)/src/include \
+	-DBOOST_LOG_DYN_LINK
 AM_LDFLAGS = $(BOOST_LDFLAGS)
 
 noinst_LTLIBRARIES = libagent_ovs.la
 libagent_ovs_la_CXXFLAGS = \
 	$(libopflex_CFLAGS) \
 	$(libmodelgbp_CFLAGS) \
-	$(libvirt_CFLAGS) \
-	$(libglog_CFLAGS)
+	$(OVS_ADDL_CFLAGS) \
+	$(libopenvswitch_CFLAGS) \
+	$(libofproto_CFLAGS)
 libagent_ovs_la_LIBADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
 	$(libvirt_LIBS) \
-	$(libglog_LIBS) \
+	$(BOOST_LOG_LIB) \
+	$(BOOST_LOG_SETUP_LIB) \
 	$(BOOST_SYSTEM_LIB) \
 	$(BOOST_FILESYSTEM_LIB) \
-	$(BOOST_THREAD_LIB) 
+	$(BOOST_THREAD_LIB) \
+	$(libopenvswitch_LIBS) \
+	$(libofproto_LIBS)
 
 libagent_ovs_la_SOURCES = \
-	src/include/GLogLogHandler.h \
+	src/include/BoostLogHandler.h \
 	src/include/PolicyListener.h \
 	src/include/PolicyManager.h \
 	src/include/Endpoint.h \
@@ -41,7 +51,7 @@ libagent_ovs_la_SOURCES = \
 	src/include/EndpointSource.h \
 	src/include/FSEndpointSource.h \
 	src/include/Agent.h \
-	src/GLogLogHandler.cpp \
+	src/BoostLogHandler.cpp \
 	src/PolicyManager.cpp \
 	src/Endpoint.cpp \
 	src/EndpointManager.cpp \
@@ -49,9 +59,21 @@ libagent_ovs_la_SOURCES = \
 	src/FSEndpointSource.cpp \
 	src/Agent.cpp
 
-SUBDIRS =
 if HAVE_OVS
-SUBDIRS += src/enforcer
+libagent_ovs_la_SOURCES += \
+	src/include/FlowExecutor.h \
+	src/include/FlowManager.h \
+	src/include/ovs.h \
+	src/include/TableState.h \
+	src/include/ActionBuilder.h \
+	src/include/SwitchConnection.h \
+	src/include/PortMapper.h \
+	src/FlowManager.cpp \
+	src/TableState.cpp \
+	src/FlowExecutor.cpp \
+	src/ActionBuilder.cpp \
+	src/SwitchConnection.cpp \
+	src/PortMapper.cpp
 endif
 
 bin_PROGRAMS=agent_ovs
@@ -63,10 +85,12 @@ agent_ovs_LDADD = \
 	$(BOOST_PROGRAM_OPTIONS_LIB)
 
 TESTS = agent_test
-noinst_PROGRAMS = $(TESTS)
 agent_test_CXXFLAGS = \
 	-I$(top_srcdir)/test/include \
 	$(libopflex_CFLAGS) $(libmodelgbp_CFLAGS) \
+	$(OVS_ADDL_CFLAGS) \
+	$(libopenvswitch_CFLAGS) \
+	$(libofproto_CFLAGS) \
 	-DBOOST_TEST_DYN_LINK
 agent_test_SOURCES = \
 	test/include/BaseFixture.h \
@@ -75,7 +99,19 @@ agent_test_SOURCES = \
 	test/EndpointManager_test.cpp
 agent_test_LDADD = \
 	libagent_ovs.la \
-	$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
+	$(BOOST_UNIT_TEST_FRAMEWORK_LIB) \
+	$(libopenvswitch_LIBS) \
+	$(libofproto_LIBS)
+
+if HAVE_OVS
+agent_test_SOURCES += \
+	test/include/ModbFixture.h \
+	test/FlowManager_test.cpp \
+	test/PortMapper_test.cpp \
+	test/FlowExecutor_test.cpp
+endif
+
+noinst_PROGRAMS = $(TESTS)
 
 agentconfdir=$(sysconfdir)/opflex-agent-ovs
 agentconf_DATA = opflex-agent-ovs.conf
@@ -94,21 +130,20 @@ if HAVE_OVS
 noinst_PROGRAMS += integration_test
 
 integration_test_CXXFLAGS = $(BOOST_CPPFLAGS) -DBOOST_TEST_DYN_LINK \
-	-I$(top_srcdir)/include \
-	-I$(top_srcdir)/src/enforcer/include \
-	$(OVS_CFLAGS)
+	$(OVS_ADDL_CFLAGS)  \
+	$(libopenvswitch_CFLAGS) \
+	$(libofproto_CFLAGS)
 integration_test_LDFLAGS = $(BOOST_LDFLAGS)
 
 integration_test_SOURCES = \
 	integration-test/main.cpp \
 	integration-test/connection_test.cpp
 
-integration_test_LDADD = $(top_builddir)/src/enforcer/libenforcer.la \
-	$(libopflex_LIBS) \
+integration_test_LDADD = \
+	libagent_ovs.la \
 	$(BOOST_UNIT_TEST_FRAMEWORK_LIB) \
-	$(OVS_LIBS) \
-	$(UV_LIBS) \
-	$(libglog_LIBS)
+	$(libopenvswitch_LIBS) \
+	$(libofproto_LIBS)
 endif
 
 check-integration: agent_ovs

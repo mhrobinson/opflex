@@ -6,12 +6,8 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <opflex/comms/comms-internal.hpp>
+#include <yajr/internal/comms.hpp>
 #include <opflex/logging/internal/logging.hpp>
-
-namespace opflex { namespace comms {
-
-using namespace opflex::comms::internal;
 
 /*
                              _        _   _
@@ -41,13 +37,38 @@ using namespace opflex::comms::internal;
                                                              (Public interfaces)
 */
 
-/* only pass peer when re-attempting to listen following a failure */
-int comms_active_connection(
-        ConnectionHandler & connectionHandler,
-        char const * host, char const * service,
-        uv_loop_selector_fn uv_loop_selector, ActivePeer * peer) {
+::yajr::Peer * ::yajr::Peer::create(
+        char const * host,
+        char const * service,
+        ::yajr::Peer::StateChangeCb connectionHandler,
+        void * data,
+        UvLoopSelector uvLoopSelector
+    ) {
 
     LOG(INFO) << host << ":" << service;
+
+    ::yajr::comms::internal::ActivePeer * peer;
+    if (!(peer = new (std::nothrow) ::yajr::comms::internal::ActivePeer(
+                    host,
+                    service,
+                    connectionHandler,
+                    data,
+                    uvLoopSelector))) {
+        LOG(WARNING) << ": out of memory, dropping new peer on the floor";
+        return NULL;
+    }
+
+    LOG(DEBUG) << peer << " queued up for resolution";
+    peer->insert(::yajr::comms::internal::Peer::LoopData::TO_RESOLVE);
+
+    return peer;
+}
+
+namespace yajr { namespace comms {
+
+using namespace yajr::comms::internal;
+
+void ::yajr::comms::internal::ActivePeer::retry() {
 
     struct addrinfo const hints = (struct addrinfo){
         /* .ai_flags    = */ 0,
@@ -56,31 +77,24 @@ int comms_active_connection(
         /* .ai_protocol = */ IPPROTO_TCP,
     };
 
-    if (peer) {
-        peer->reset(uv_loop_selector);
-    } else {
-        if (!(peer = new (std::nothrow) ActivePeer(
-                        connectionHandler,
-                        uv_loop_selector))) {
-            LOG(WARNING) << ": out of memory, dropping new peer on the floor";
-            return UV_ENOMEM;
-        }
-    }
-
-
     int rc;
-    if ((rc = uv_getaddrinfo(peer->getUvLoop(), &peer->dns_req,
-                    on_resolved, host, service, &hints))) {
+    if ((rc = uv_getaddrinfo(
+                    getUvLoop(),
+                    &dns_req_,
+                    on_resolved,
+                    getHostname(),
+                    getService(),
+                    &hints))) {
         LOG(WARNING) << "uv_getaddrinfo: [" << uv_err_name(rc) << "] " <<
             uv_strerror(rc);
-        peer->insert(internal::Peer::LoopData::RETRY_TO_CONNECT);
+        onError(rc);
+        insert(internal::Peer::LoopData::RETRY_TO_CONNECT);
     } else {
-        LOG(DEBUG) << peer << " up() for a pending getaddrinfo()";
-        peer->up();
-        peer->insert(internal::Peer::LoopData::ATTEMPTING_TO_CONNECT);
+        LOG(DEBUG) << this << " up() for a pending getaddrinfo()";
+        up();
+        insert(internal::Peer::LoopData::ATTEMPTING_TO_CONNECT);
     }
 
-    return rc;
 }
 
 
@@ -327,7 +341,7 @@ int connect_to_next_address(ActivePeer * peer, bool swap_stack) {
 
     int rc = UV_EAI_FAIL;
 
-    while (ai && (rc = uv_tcp_connect(&peer->connect_req, &peer->handle_,
+    while (ai && (rc = uv_tcp_connect(&peer->connect_req_, &peer->handle_,
                 ai->ai_addr, on_active_connection))) {
         LOG(ai ? INFO : WARNING) << "uv_tcp_connect: [" << uv_err_name(rc) <<
             "] " << uv_strerror(rc);
@@ -362,6 +376,6 @@ int connect_to_next_address(ActivePeer * peer, bool swap_stack) {
     return rc;
 }
 
-} /* opflex::comms::internal namespace */
+} /* yajr::comms::internal namespace */
 
-}} /* opflex::comms and opflex namespaces */
+}} /* yajr::comms and yajr namespaces */

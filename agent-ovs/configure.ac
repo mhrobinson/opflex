@@ -29,6 +29,8 @@ m4_include([m4/ax_boost_thread.m4])
 m4_include([m4/ax_boost_system.m4])
 m4_include([m4/ax_boost_date_time.m4])
 m4_include([m4/ax_boost_filesystem.m4])
+m4_include([m4/ax_boost_log.m4])
+m4_include([m4/ax_boost_log_setup.m4])
 
 # ---------------------------------------------------------------
 # Environment introspection
@@ -58,21 +60,17 @@ AX_BOOST_SYSTEM
 AX_BOOST_DATE_TIME
 AX_BOOST_THREAD
 AX_BOOST_FILESYSTEM
+AX_BOOST_LOG
+AX_BOOST_LOG_SETUP
 
 PKG_CHECK_MODULES([libopflex], [libopflex >= 0.1.0])
 PKG_CHECK_MODULES([libmodelgbp], [libmodelgbp >= 0.1.0])
-PKG_CHECK_MODULES([libglog], [libglog >= 0.3.3])
 
-# check for libopenvswitch. Should use pkg-config
-OVS_PREFIX=/usr/local
-AC_SUBST(OVS_PREFIX)
-AC_CHECK_LIB([openvswitch], main,
-    [OVS_LIBS="-lopenvswitch -lpthread -lrt -lssl -lcrypto";
-     OVS_CFLAGS="-I\$(OVS_PREFIX)/include -I\$(OVS_PREFIX)/include/ovs/include -fpermissive"],
-    [echo "libopenvswitch not found; agent won't be built"])
-AC_SUBST(OVS_LIBS)
-AC_SUBST(OVS_CFLAGS)
-AM_CONDITIONAL([HAVE_OVS], [test "$ac_cv_lib_openvswitch_main" = yes])
+# check for libopenvswitch
+PKG_CHECK_MODULES([libofproto], [libofproto >= 2.3.90], [], [have_ofproto="no"])
+PKG_CHECK_MODULES([libopenvswitch], [libopenvswitch >= 2.3.90], [], [have_openvswitch="no"])
+
+AM_CONDITIONAL([HAVE_OVS], [test "$have_ofproto" != "no" -a "$have_openvswitch" != "no"])
 
 # inotify check
 AC_ARG_ENABLE(inotify, "Whether to use inotify for endpoint source")
@@ -102,8 +100,6 @@ fi
 
 AC_CONFIG_FILES([\
 	Makefile \
-	src/enforcer/Makefile \
-	src/enforcer/test/Makefile \
 	doc/Doxyfile])
 AC_OUTPUT
 

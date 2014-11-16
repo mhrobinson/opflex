@@ -28,6 +28,8 @@
 #include "opflex/modb/internal/ObjectStore.h"
 #include "opflex/modb/mo-internal/StoreClient.h"
 
+#include "opflex/engine/internal/OpflexPool.h"
+#include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/engine/internal/MOSerializer.h"
 #include "opflex/engine/internal/AbstractObjectListener.h"
 
@@ -41,7 +43,9 @@ namespace engine {
  * The processor also maintains an index containing protocol state
  * information for each of the managed objects in the MODB.
  */
-class Processor : public internal::AbstractObjectListener {
+class Processor : public internal::AbstractObjectListener,
+                  public internal::HandlerFactory,
+                  public internal::MOSerializer::Listener {
 public:
     /**
      * Construct a processor associated with the given object store
@@ -53,6 +57,27 @@ public:
      * Destroy the processor
      */
     ~Processor();
+
+    /**
+     * Set the opflex identity information for this framework
+     * instance.
+     *
+     * @param name the unique name for this opflex component within
+     * the policy domain
+     * @param domain the globally unique name for this policy domain
+     * @see opflex::ofcore::OFFramework::addOpflexIdentity
+     */
+    void setOpflexIdentity(const std::string& name,
+                           const std::string& domain);
+
+    /**
+     * Add an OpFlex peer.
+     *
+     * @param hostname the hostname or IP address to connect to
+     * @param port the TCP port to connect on
+     * @see opflex::ofcore::OFFramework::addPeer
+     */
+    void addPeer(const std::string& hostname, int port);
 
     /**
      * Start the processor thread.  Should call only after the
@@ -85,15 +110,40 @@ public:
     virtual void objectUpdated(modb::class_id_t class_id, 
                                const modb::URI& uri);
 
+    // See MOSerializer::Listener::remoteObjectUpdated
+    virtual void remoteObjectUpdated(modb::class_id_t class_id, 
+                                     const modb::URI& uri);
+
     /**
      * Get the reference count for an object
      */
     size_t getRefCount(const modb::URI& uri);
 
     /**
+     * Check whether the given object metadata is either nonexistent
+     * or in state NEW
+     */
+    bool isObjNew(const modb::URI& uri);
+
+    /**
      * Set the processing delay for unit tests
      */
     void setDelay(uint64_t delay) { processingDelay = delay; }
+
+    // See HandlerFactory::newHandler
+    virtual 
+    internal::OpflexHandler* newHandler(internal::OpflexConnection* conn);
+
+    /**
+     * Get the opflex connection pool for the processor
+     */
+    internal::OpflexPool& getPool() { return pool; }
+
+    /**
+     * A new client connection is ready and the resolver state must be
+     * synchronized to the server.
+     */
+    void connectionReady(internal::OpflexConnection* conn);
 
 private:
     /**
@@ -107,15 +157,31 @@ private:
     internal::MOSerializer serializer;
 
     /**
+     * The pool of Opflex connections
+     */
+    internal::OpflexPool pool;
+
+    /**
      * The status of items in the MODB with respect to the opflex
      * protocol
      */
     enum ItemState {
+        /** a new item written locally */
         NEW,
+        /** a local item that's been updated */
         UPDATED,
+        /** a local item that's been send to the server */
         IN_SYNC,
+        /** an unresolved remote reference */
         UNRESOLVED,
+        /** a remote reference with resolve request sent to server */
+        RESOLVED,
+        /** An orphaned item that will be deleted unless something
+            references it in the current queue.  This is used for
+            newly-added items that are only orphaned transiently. */
         PENDING_DELETE,
+        /** An item that's actually deleted.  Items won't actually
+            appear in this state in the index. */
         DELETED
     };
 
@@ -145,6 +211,11 @@ private:
          * Outgoing URI references
          */
         boost::unordered_set<modb::reference_t> urirefs;
+
+        /**
+         * Whether the item was written locally
+         */
+        bool local;
     };
 
     /**
@@ -158,13 +229,14 @@ private:
         }
         item(const modb::URI& uri_, modb::class_id_t class_id_,
              uint64_t expiration_, int64_t refresh_rate_,
-             ItemState state_)
+             ItemState state_, bool local_)
             : uri(uri_), expiration(expiration_) {
             details = new item_details();
             details->class_id = class_id_;
             details->refresh_rate = refresh_rate_;
             details->state = state_;
             details->refcount = 0;
+            details->local = local_;
         }
         ~item() { if (details) delete details; }
         item& operator=( const item& rhs ) {
@@ -266,6 +338,14 @@ private:
     void processItem(obj_state_by_exp::iterator& it);
     void updateItemExpiration(obj_state_by_exp::iterator& it);
     bool isOrphan(const item& item);
+    bool isParentSyncObject(const item& item);
+    void doObjectUpdated(modb::class_id_t class_id, 
+                         const modb::URI& uri,
+                         bool remote);
+    bool resolveObj(modb::ClassInfo::class_type_t type, const item& it);
+    bool declareObj(modb::ClassInfo::class_type_t type, const item& it);
+
+    friend class MOSerializer;
 };
 
 } /* namespace engine */
