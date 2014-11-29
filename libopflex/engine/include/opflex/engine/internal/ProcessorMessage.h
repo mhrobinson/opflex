@@ -54,15 +54,36 @@ protected:
  */
 class PolicyResolveReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new policy request for the given list of references
+     *
+     * @param processor the processor for the request
+     * @param policies_ the policies that should be requested
+     */
     PolicyResolveReq(Processor* processor,
                      const std::vector<modb::reference_t>& policies_)
         : ProcessorMessage("policy_resolve", REQUEST, processor), 
           policies(policies_) {}
 
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
 
+    virtual PolicyResolveReq* clone() {
+        return new PolicyResolveReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         writer.StartArray();
@@ -85,21 +106,45 @@ public:
         return true;
     }
 
-protected:
+private:
     std::vector<modb::reference_t> policies;
 };
 
+/**
+ * A policy unresolve request message
+ */
 class PolicyUnresolveReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new policy unresolve for the given list of references
+     *
+     * @param processor the processor for the request
+     * @param policies_ the policies that should be unresolved
+     */
     PolicyUnresolveReq(Processor* processor,
                        const std::vector<modb::reference_t>& policies_)
         : ProcessorMessage("policy_unresolve", REQUEST, processor), 
           policies(policies_) {}
 
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
 
+    virtual PolicyUnresolveReq* clone() { 
+        return new PolicyUnresolveReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         writer.StartArray();
@@ -120,7 +165,7 @@ public:
         return true;
     }
 
-protected:
+private:
     std::vector<modb::reference_t> policies;
 };
 
@@ -129,19 +174,41 @@ protected:
  */
 class EndpointResolveReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new endpoint resolve request for the given list of
+     * references
+     *
+     * @param processor the processor for the request
+     * @param endpoints_ the endpoints that should be requested
+     */
     EndpointResolveReq(Processor* processor,
-                     const std::vector<modb::reference_t>& policies_)
+                     const std::vector<modb::reference_t>& endpoints_)
         : ProcessorMessage("endpoint_resolve", REQUEST, processor), 
-          policies(policies_) {}
+          endpoints(endpoints_) {}
+
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
 
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
 
+    virtual EndpointResolveReq* clone() { 
+        return new EndpointResolveReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         writer.StartArray();
-        BOOST_FOREACH(modb::reference_t& p, policies) {
+        BOOST_FOREACH(modb::reference_t& p, endpoints) {
             try {
                 writer.StartObject();
                 writer.String("subject");
@@ -160,25 +227,50 @@ public:
         return true;
     }
 
-protected:
-    std::vector<modb::reference_t> policies;
+private:
+    std::vector<modb::reference_t> endpoints;
 };
 
+/**
+ * Endpoint unresolve message
+ */
 class EndpointUnresolveReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new endpoint unresolve request for the given list
+     * of references
+     *
+     * @param processor the processor for the request
+     * @param endpoints_ the endpoints that should be unresolved
+     */
     EndpointUnresolveReq(Processor* processor,
-                       const std::vector<modb::reference_t>& policies_)
+                       const std::vector<modb::reference_t>& endpoints_)
         : ProcessorMessage("endpoint_unresolve", REQUEST, processor), 
-          policies(policies_) {}
+          endpoints(endpoints_) {}
+
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
 
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
 
+    virtual EndpointUnresolveReq* clone() { 
+        return new EndpointUnresolveReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         writer.StartArray();
-        BOOST_FOREACH(modb::reference_t& p, policies) {
+        BOOST_FOREACH(modb::reference_t& p, endpoints) {
             try {
                 writer.StartObject();
                 writer.String("subject");
@@ -195,8 +287,8 @@ public:
         return true;
     }
 
-protected:
-    std::vector<modb::reference_t> policies;
+private:
+    std::vector<modb::reference_t> endpoints;
 };
 
 /**
@@ -204,15 +296,38 @@ protected:
  */
 class EndpointDeclareReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new endpoint declare request for the given list of
+     * endpoint references.
+     *
+     * @param processor the processor for the request
+     * @param endpoints_ the endpoints that should be included in the
+     * message
+     */
     EndpointDeclareReq(Processor* processor,
                        const std::vector<modb::reference_t>& endpoints_)
         : ProcessorMessage("endpoint_declare", REQUEST, processor), 
           endpoints(endpoints_) {}
 
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
-    
+
+    virtual EndpointDeclareReq* clone() { 
+        return new EndpointDeclareReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         MOSerializer& serializer = processor->getSerializer();
@@ -241,21 +356,46 @@ public:
         return true;
     }
 
-protected:
+private:
     std::vector<modb::reference_t> endpoints;
 };
 
+/**
+ * Endpoint undeclare message
+ */
 class EndpointUndeclareReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new endpoint undeclare request for the given list of
+     * endpoint references.
+     *
+     * @param processor the processor for the request
+     * @param endpoints_ the endpoints that should be undeclared
+     */
     EndpointUndeclareReq(Processor* processor,
                          const std::vector<modb::reference_t>& endpoints_)
         : ProcessorMessage("endpoint_undeclare", REQUEST, processor), 
           endpoints(endpoints_) {}
     
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
-    
+
+    virtual EndpointUndeclareReq* clone() { 
+        return new EndpointUndeclareReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         MOSerializer& serializer = processor->getSerializer();
@@ -281,67 +421,47 @@ public:
         return true;
     }
 
-protected:
+private:
     std::vector<modb::reference_t> endpoints;
 };
 
-class EndpointUpdateReq : public ProcessorMessage {
-public:
-    EndpointUpdateReq(Processor* processor,
-                      const std::vector<modb::reference_t>& replace_,
-                      const std::vector<modb::URI>& del_)
-        : ProcessorMessage("endpoint_update", REQUEST, processor), 
-          replace(replace_), del(del_) {}
-    
-    virtual void serializePayload(MessageWriter& writer) {
-        (*this)(writer);
-    }
-    
-    template <typename T>
-    bool operator()(rapidjson::Writer<T> & writer) {
-        MOSerializer& serializer = processor->getSerializer();
-        modb::mointernal::StoreClient* client = processor->getSystemClient();
-
-        writer.StartArray();
-        writer.StartObject();
-
-        writer.String("replace");
-        writer.StartArray();
-        BOOST_FOREACH(modb::reference_t& p, replace) {
-            serializer.serialize(p.first, p.second, 
-                                 *client, writer,
-                                 true);
-        }
-        writer.EndArray();
-
-        writer.String("delete");
-        writer.StartArray();
-        BOOST_FOREACH(modb::URI& u, del) {
-            writer.String(u.toString().c_str());
-        }
-        writer.EndArray();
-
-        writer.EndObject();
-        writer.EndArray();
-        return true;
-    }
-
-protected:
-    std::vector<modb::reference_t> replace;
-    std::vector<modb::URI> del;
-};
-
+/**
+ * State report request message
+ */
 class StateReportReq : public ProcessorMessage {
 public:
+    /**
+     * Construct a new state report request for the given list of
+     * observable references
+     *
+     * @param processor the processor for the request
+     * @param observables_ the observables that should be included in
+     * the message
+     */
     StateReportReq(Processor* processor,
                    const std::vector<modb::reference_t>& observables_)
         : ProcessorMessage("state_report", REQUEST, processor), 
           observables(observables_) {}
-    
+
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
     }
-    
+
+    virtual StateReportReq* clone() { 
+        return new StateReportReq(*this);
+    }
+
+    /**
+     * Operator that will serialize the message to the given writer.
+     *
+     * @param writer the rapidjson writer
+     */
     template <typename T>
     bool operator()(rapidjson::Writer<T> & writer) {
         MOSerializer& serializer = processor->getSerializer();
@@ -364,7 +484,7 @@ public:
         return true;
     }
 
-protected:
+private:
     std::vector<modb::reference_t> observables;
 };
 

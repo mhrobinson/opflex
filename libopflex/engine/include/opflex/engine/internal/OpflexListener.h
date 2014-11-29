@@ -39,14 +39,20 @@ public:
      *
      * @param handlerFactory a factory that can allocate a handler for
      * the spawned OpflexServerConnection objects
-     * @param pool the connection pool that hosts this connection
      * @param port the TCP port number to bind to
+     * @param name the opflex name for the server
+     * @param domain the opflex domain for the server
      */
     OpflexListener(HandlerFactory& handlerFactory,
                    int port,
                    const std::string& name,
                    const std::string& domain);
     ~OpflexListener();
+
+    /**
+     * Start listening on the local socket for new connections
+     */
+    void listen();
 
     /**
      * Stop listening on the local socket for new connections
@@ -73,12 +79,12 @@ public:
     const std::string& getDomain() { return domain; }
 
     /**
-     * Write a given message to all the connected and ready peers.
+     * Send a given message to all the connected and ready peers.
      *
-     * @param message the message to write
-     * @param role
+     * @param message the message to write.  The memory will be owned
+     * by the listener
      */
-    void writeToAll(OpflexMessage& message);
+    void sendToAll(OpflexMessage* message);
 
     /**
      * A predicate for use with applyConnPred
@@ -90,6 +96,12 @@ public:
      * true if the predicate is true for all connections
      */
     bool applyConnPred(conn_pred_t pred, void* user);
+
+    /**
+     * Check whether the server is listening on the socket
+     * @return true if the server is listening
+     */
+    bool isListening();
 
 private:
     HandlerFactory& handlerFactory;
@@ -105,17 +117,33 @@ private:
     uv_loop_t server_loop;
     uv_thread_t server_thread;
 
+#ifdef SIMPLE_RPC
     uv_tcp_t bind_socket;
+#else
+    yajr::Listener* listener;
+#endif
 
     uv_mutex_t conn_mutex;
     typedef std::set<OpflexServerConnection*> conn_set_t;
     conn_set_t conns;
 
-    uv_async_t async;
+    uv_async_t cleanup_async;
+    uv_async_t writeq_async;
 
     static void server_thread_func(void* processor);
+    static void on_cleanup_async(uv_async_t *handle);
+    static void on_writeq_async(uv_async_t *handle);
+    void messagesReady();
+    uv_loop_t* getLoop() { return &server_loop; }
+    void connectionClosed(OpflexServerConnection* conn);
+
+#ifdef SIMPLE_RPC
     static void on_new_connection(uv_stream_t *server, int status);
     static void on_conn_closed(uv_handle_t *handle);
+#else
+    static void* on_new_connection(yajr::Listener* listener, 
+                                   void* data, int error);
+#endif
 
     friend class OpflexServerConnection;
 };

@@ -11,6 +11,7 @@
 #include <boost/test/unit_test.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/foreach.hpp>
+#include <boost/assign/list_of.hpp>
 #include "logging.h"
 #include "ovs.h"
 #include "FlowManager.h"
@@ -19,6 +20,7 @@
 #include "ModbFixture.h"
 
 using namespace std;
+using namespace boost::assign;
 using namespace opflex::enforcer;
 using namespace opflex::enforcer::flow;
 using namespace opflex::modb;
@@ -85,8 +87,7 @@ public:
     FlowManagerFixture() : ModbFixture(),
                         flowManager(agent),
                         policyMgr(agent.getPolicyManager()) {
-        exec = new MockFlowExecutor();
-        flowManager.SetExecutor(exec);
+        flowManager.SetExecutor(&exec);
         flowManager.SetPortMapper(&portmapper);
         portmapper.ports[ep0->getInterfaceName().get()] = 80;
 
@@ -96,6 +97,13 @@ public:
         WAIT_FOR(policyMgr.groupExists(epg1->getURI()), 500);
         WAIT_FOR(policyMgr.getRDForGroup(epg1->getURI()) != boost::none, 500);
 
+        PolicyManager::uri_set_t egs;
+        WAIT_FOR_DO(egs.size() == 2, 1000,
+            egs.clear(); policyMgr.getContractProviders(con1->getURI(), egs));
+        egs.clear();
+        WAIT_FOR_DO(egs.size() == 2, 500,
+            egs.clear(); policyMgr.getContractConsumers(con1->getURI(), egs));
+
         createEntriesForObjects();
         /* flowManager is not Start()-ed here to control the updates it gets */
     }
@@ -103,7 +111,7 @@ public:
     }
     void createEntriesForObjects();
 
-    MockFlowExecutor *exec;
+    MockFlowExecutor exec;
     FlowManager flowManager;
     MockPortMapper portmapper;
     PolicyManager& policyMgr;
@@ -113,105 +121,129 @@ public:
     vector<string> fe_ep0_eg0_1, fe_ep0_eg0_2;
     vector<string> fe_ep0_port_1, fe_ep0_port_2, fe_ep0_port_3;
     vector<string> fe_ep2, fe_ep2_eg1;
+    vector<string> fe_con0, fe_con1, fe_con2;
 };
 
-BOOST_AUTO_TEST_SUITE(flowmanager_test)
+BOOST_AUTO_TEST_SUITE(FlowManager_test)
 
 BOOST_FIXTURE_TEST_CASE(epg, FlowManagerFixture) {
     /* create */
-    exec->Expect(FlowEdit::add, fe_epg0);
-    exec->Expect(FlowEdit::add, fe_ep0);
-    exec->Expect(FlowEdit::add, fe_ep2);
+    exec.Expect(FlowEdit::add, fe_epg0);
+    exec.Expect(FlowEdit::add, fe_ep0);
+    exec.Expect(FlowEdit::add, fe_ep2);
     flowManager.egDomainUpdated(epg0->getURI());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* no change */
     flowManager.egDomainUpdated(epg0->getURI());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* forwarding object change */
     Mutator m1(framework, policyOwner);
     epg0->addGbpEpGroupToNetworkRSrc()
-            ->setTargetSubnet(subnetsfd0_1->getURI());
+            ->setTargetSubnets(subnetsfd0->getURI());
     m1.commit();
     WAIT_FOR(policyMgr.getFDForGroup(epg0->getURI()) != boost::none, 500);
-    exec->Expect(FlowEdit::mod, fe_epg0_fd0);
-    exec->Expect(FlowEdit::mod, fe_ep0_fd0);
+    exec.Expect(FlowEdit::mod, fe_epg0_fd0);
+    exec.Expect(FlowEdit::mod, fe_ep0_fd0);
     flowManager.egDomainUpdated(epg0->getURI());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* remove */
     Mutator m2(framework, policyOwner);
     epg0->remove();
     m2.commit();
     WAIT_FOR(policyMgr.groupExists(epg0->getURI()) == false, 500);
-    exec->Expect(FlowEdit::del, fe_epg0_fd0);
-    exec->Expect(FlowEdit::del, fe_epg0[1]);
+    exec.Expect(FlowEdit::del, fe_epg0_fd0);
+    exec.Expect(FlowEdit::del, fe_epg0[1]);
     flowManager.egDomainUpdated(epg0->getURI());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 }
 
 BOOST_FIXTURE_TEST_CASE(localEp, FlowManagerFixture) {
     /* created */
-    exec->Expect(FlowEdit::add, fe_ep0);
+    exec.Expect(FlowEdit::add, fe_ep0);
     flowManager.endpointUpdated(ep0->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* endpoint group change */
     ep0->setEgURI(epg1->getURI());
     epSrc.updateEndpoint(*ep0);
-    exec->Expect(FlowEdit::mod, fe_ep0_eg1);
-    exec->Expect(FlowEdit::del, fe_ep0[6]);
+    exec.Expect(FlowEdit::mod, fe_ep0_eg1);
+    exec.Expect(FlowEdit::del, fe_ep0[6]);
     flowManager.endpointUpdated(ep0->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* endpoint group changes back to old one */
     ep0->setEgURI(epg0->getURI());
     epSrc.updateEndpoint(*ep0);
-    exec->Expect(FlowEdit::mod, fe_ep0_eg0_1);
-    exec->Expect(FlowEdit::add, fe_ep0[6]);
-    exec->Expect(FlowEdit::mod, fe_ep0_eg0_2);
+    exec.Expect(FlowEdit::mod, fe_ep0_eg0_1);
+    exec.Expect(FlowEdit::add, fe_ep0[6]);
+    exec.Expect(FlowEdit::mod, fe_ep0_eg0_2);
     flowManager.endpointUpdated(ep0->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* port-mapping change */
     portmapper.ports[ep0->getInterfaceName().get()] = 180;
-    exec->Expect(FlowEdit::add, fe_ep0_port_1);
+    exec.Expect(FlowEdit::add, fe_ep0_port_1);
     for (int i = 0; i < fe_ep0_port_1.size(); ++i)  {
-        exec->Expect(FlowEdit::del, fe_ep0[i]);
+        exec.Expect(FlowEdit::del, fe_ep0[i]);
     }
-    exec->Expect(FlowEdit::add, fe_ep0_port_2);
+    exec.Expect(FlowEdit::add, fe_ep0_port_2);
     for (int i = fe_ep0_port_1.size();
          i < fe_ep0_port_1.size() + fe_ep0_port_2.size();
          ++i) {
-        exec->Expect(FlowEdit::del, fe_ep0[i]);
+        exec.Expect(FlowEdit::del, fe_ep0[i]);
     }
-    exec->Expect(FlowEdit::mod, fe_ep0_port_3);
+    exec.Expect(FlowEdit::mod, fe_ep0_port_3);
     flowManager.endpointUpdated(ep0->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* remove endpoint */
     epSrc.removeEndpoint(ep0->getUUID());
-    exec->Expect(FlowEdit::del, fe_ep0_port_1);
-    exec->Expect(FlowEdit::del, fe_ep0_port_2);
-    exec->Expect(FlowEdit::del, fe_ep0_port_3);
+    exec.Expect(FlowEdit::del, fe_ep0_port_1);
+    exec.Expect(FlowEdit::del, fe_ep0_port_2);
+    exec.Expect(FlowEdit::del, fe_ep0_port_3);
     flowManager.endpointUpdated(ep0->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 }
 
 BOOST_FIXTURE_TEST_CASE(remoteEp, FlowManagerFixture) {
     /* created */
-    exec->Expect(FlowEdit::add, fe_ep2);
+    exec.Expect(FlowEdit::add, fe_ep2);
     flowManager.endpointUpdated(ep2->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
 
     /* endpoint group change */
     ep2->setEgURI(epg1->getURI());
     epSrc.updateEndpoint(*ep2);
-    exec->Expect(FlowEdit::mod, fe_ep2_eg1);
-    exec->Expect(FlowEdit::del, fe_ep2[0]);
+    exec.Expect(FlowEdit::mod, fe_ep2_eg1);
+    exec.Expect(FlowEdit::del, fe_ep2[0]);
     flowManager.endpointUpdated(ep2->getUUID());
-    BOOST_CHECK(exec->IsEmpty());
+    BOOST_CHECK(exec.IsEmpty());
+}
+
+BOOST_FIXTURE_TEST_CASE(policy, FlowManagerFixture) {
+    exec.Expect(FlowEdit::add, fe_con0);
+    flowManager.contractUpdated(con0->getURI());
+    BOOST_CHECK(exec.IsEmpty());
+
+    exec.Expect(FlowEdit::add, fe_con2);
+    flowManager.contractUpdated(con2->getURI());
+    BOOST_CHECK(exec.IsEmpty());
+
+    exec.Expect(FlowEdit::add, fe_con1);
+    flowManager.contractUpdated(con1->getURI());
+    BOOST_CHECK(exec.IsEmpty());
+
+    /* remove */
+    Mutator m2(framework, policyOwner);
+    con2->remove();
+    m2.commit();
+    WAIT_FOR(policyMgr.contractExists(con2->getURI()) == false, 500);
+    exec.Expect(FlowEdit::del, fe_con2);
+    flowManager.contractUpdated(con2->getURI());
+    BOOST_CHECK(exec.IsEmpty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -221,7 +253,8 @@ enum REG {
 };
 string rstr[] = {
     "NXM_NX_REG0[]", "NXM_NX_REG2[]", "NXM_NX_REG4[]", "NXM_NX_REG5[]",
-    "NXM_NX_REG6[]", "NXM_NX_REG7[]", "NXM_NX_TUN_ID[]", "NXM_NX_TUN_IPV4_DST[]"
+    "NXM_NX_REG6[]", "NXM_NX_REG7[]", "NXM_NX_TUN_ID[0..31]",
+    "NXM_NX_TUN_IPV4_DST[]"
 };
 string rstr1[] = { "reg0", "reg2", "reg4", "reg5", "reg6", "reg7", "", ""};
 
@@ -239,7 +272,7 @@ public:
     }
     string done() { cntr = 0; return entry; }
     Bldr& table(uint8_t t) { rep(", table=", str(t)); return *this; }
-    Bldr& priority(uint8_t p) { rep(", priority=", str(p)); return *this; }
+    Bldr& priority(uint16_t p) { rep(", priority=", str(p)); return *this; }
     Bldr& tunId(uint32_t id) { rep(",tun_id=", str(id, true)); return *this; }
     Bldr& in(uint32_t p) { rep(",in_port=", str(p)); return *this; }
     Bldr& reg(REG r, uint32_t v) {
@@ -249,11 +282,13 @@ public:
     Bldr& isEthDst(string& s) { rep(",dl_dst=", s); return *this; }
     Bldr& ip() { rep(",ip"); return *this; }
     Bldr& arp() { rep(",arp"); return *this; }
+    Bldr& tcp() { rep(",tcp"); return *this; }
     Bldr& isArpOp(uint8_t op) { rep(",arp_op=", str(op)); return *this; }
     Bldr& isSpa(string& s) { rep(",arp_spa=", s); return *this; }
     Bldr& isTpa(string& s) { rep(",arp_tpa=", s); return *this; }
     Bldr& isIpSrc(string& s) { rep(",nw_src=", s); return *this; }
     Bldr& isIpDst(string& s) { rep(",nw_dst=", s); return *this; }
+    Bldr& isTpDst(uint16_t p) { rep(",tp_dst=", str(p)); return *this; }
     Bldr& actions() { rep(" actions="); cntr = 1; return *this; }
     Bldr& load(REG r, uint32_t v) {
         rep("load:", str(v, true), "->" + rstr[r]); return *this;
@@ -418,5 +453,39 @@ FlowManagerFixture::createEntriesForObjects() {
     /* ep2 connected to new group epg1 */
     fe_ep2_eg1.push_back(Bldr(fe_ep2[1]).load(DEPG, epg1_vnid).done());
     fe_ep2_eg1.push_back(Bldr(fe_ep2[2]).load(DEPG, epg1_vnid).done());
+
+    uint32_t epg2_vnid = policyMgr.getVnidForGroup(epg2->getURI()).get();
+    uint32_t epg3_vnid = policyMgr.getVnidForGroup(epg3->getURI()).get();
+    uint16_t prio = FlowManager::MAX_POLICY_RULE_PRIORITY;
+
+    /* con0 */
+    fe_con0.push_back(Bldr().table(3).priority(prio).reg(SEPG, epg1_vnid)
+            .reg(DEPG, epg0_vnid).actions().out(OUTPORT).done());
+    fe_con0.push_back(Bldr(fe_con0[0]).reg(SEPG, epg0_vnid)
+            .reg(DEPG, epg1_vnid).done());
+
+    /* con2 */
+    fe_con2.push_back(Bldr().table(3).priority(prio).reg(SEPG, epg3_vnid)
+            .reg(DEPG, epg2_vnid).actions().out(OUTPORT).done());
+    fe_con2.push_back(Bldr(fe_con2[0]).reg(SEPG, epg2_vnid)
+            .reg(DEPG, epg3_vnid).done());
+
+    /* con1 */
+    PolicyManager::uri_set_t ps, cs;
+    policyMgr.getContractProviders(con1->getURI(), ps);
+    policyMgr.getContractConsumers(con1->getURI(), cs);
+    unordered_set<uint32_t> pvnids, cvnids;
+    flowManager.GetGroupVnids(ps, pvnids);
+    flowManager.GetGroupVnids(cs, cvnids);
+    BOOST_FOREACH(uint32_t pvnid, pvnids) {
+        BOOST_FOREACH(uint32_t cvnid, cvnids) {
+            fe_con1.push_back(Bldr().table(3).priority(prio).tcp()
+                    .reg(SEPG, cvnid).reg(DEPG, pvnid).isTpDst(80)
+                    .actions().out(OUTPORT).done());
+            fe_con1.push_back(Bldr().table(3).priority(prio-1).arp()
+                    .reg(SEPG, pvnid).reg(DEPG, cvnid)
+                    .actions().out(OUTPORT).done());
+        }
+    }
 }
 

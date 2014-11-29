@@ -61,6 +61,7 @@ public:
     /**
      * Serialize the whole object subtree rooted at the given URI.
      *
+     * @param class_id the class ID of the object to serialize
      * @param uri the URI of the object instance
      * @param client the store client to use to look up the data
      * @param writer the writer to write to
@@ -71,7 +72,7 @@ public:
     void serialize(modb::class_id_t class_id,
                    const modb::URI& uri,
                    modb::mointernal::StoreClient& client,
-                   rapidjson::Writer<T>& writer,
+                   T& writer,
                    bool recursive = true) {
         const modb::ClassInfo& ci = store->getClassInfo(class_id);
         const boost::shared_ptr<const modb::mointernal::ObjectInstance> 
@@ -287,7 +288,7 @@ private:
      */
     template <typename T>
     void serialize_ref(modb::mointernal::StoreClient& client,
-                       rapidjson::Writer<T>& writer,
+                       T& writer,
                        modb::reference_t& ref) {
         try {
             const modb::ClassInfo& ref_class = 

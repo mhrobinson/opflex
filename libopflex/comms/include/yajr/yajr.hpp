@@ -10,6 +10,7 @@
 #ifndef _INCLUDE__YAJR__YAJR_HPP
 #define _INCLUDE__YAJR__YAJR_HPP
 
+#include <string>
 #include <uv.h>
 
 namespace yajr {
@@ -22,6 +23,7 @@ namespace StateChange {
         CONNECT,
         DISCONNECT,
         FAILURE,
+        DELETE,
     };
 };
 
@@ -41,6 +43,10 @@ struct Peer {
      *
      * When \p stateChange is FAILURE, \p error carries a non-zero value, which
      * is to be interpreted as a libuv error code.
+     *
+     * When \p stateChange is DELETE, the Peer is about to be deleted. It's a
+     * good time to release any resources such as the memory reachable via the
+     * \p data pointer.
      */
     typedef void (*StateChangeCb)(
             yajr::Peer            *,
@@ -61,7 +67,10 @@ struct Peer {
      *
      * @return a pointer to the desired uv_loop.
      */
-    typedef uv_loop_t * (*UvLoopSelector)(void);
+    typedef uv_loop_t * (*UvLoopSelector)(
+            void * data
+                                         /**< [in] Callback data for the Peer */
+    );
 
     /**
      * @brief Factory for an active yajr communication Peer.
@@ -86,14 +95,14 @@ struct Peer {
      * with a FAILURE state immediately before this time.
      *
      * If \p data was allocated by the caller, \p connectionHandler should be
-     * releasing \p data upon DISCONNECT.
+     * releasing \p data upon StateChange::To::DELETE.
      *
      * @return a pointer to the Peer created
      **/
     static Peer * create(
-            char const            * host,
+            std::string const     & host,
                                          /**< [in] the hostname to connect to */
-            char const            * service,
+            std::string const     & service,
                                                /**< [in] service name or port */
             StateChangeCb           connectionHandler,
                                               /**< [in] state change callback */
@@ -111,6 +120,14 @@ struct Peer {
      * pending for this Peer.
      */
     virtual void destroy() = 0;
+
+    /**
+     * @brief retrieves the pointer to the opaque data associated with this peer
+     *
+     * @return a pointer to the opaque data for this peer, the same pointer that
+     * is provided to the State Change callback
+     */
+    virtual void * getData() const = 0;
 
     /**
      * @brief start performing periodic keep-alive
@@ -194,7 +211,7 @@ struct Listener {
      * @return a pointer to the Peer created
      **/
     static Listener * create(
-        char const                 * ip_address,
+        const std::string&           ip_address,
                 /**< [in] the ip address to bind to, or "0.0.0.0" to bind all */
         uint16_t                     port,
                                                 /**< [in] the port to bind to */

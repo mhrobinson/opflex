@@ -21,7 +21,6 @@
 #include <uv.h>
 
 #include "opflex/engine/internal/OpflexHandler.h"
-#include "opflex/engine/internal/OpflexMessage.h"
 #include "opflex/engine/internal/OpflexClientConnection.h"
 
 #pragma once
@@ -31,6 +30,8 @@
 namespace opflex {
 namespace engine {
 namespace internal {
+
+class OpflexMessage;
 
 /**
  * A pool of OpFlex connections that will keep track of connection
@@ -79,11 +80,6 @@ public:
     void stop();
 
     /**
-     * Disconnect and clear all active OpFlex connections
-     */
-    void clear();
-
-    /**
      * Add an OpFlex peer.
      *
      * @param hostname the hostname or IP address to connect to
@@ -124,16 +120,28 @@ public:
      * @return the master for the role, or NULL if there is no ready
      * connection with that role
      */
-    OpflexClientConnection* getMasterForRole(OpflexHandler::OpflexRole role);
+    OpflexClientConnection* getMasterForRole(ofcore::OFConstants::OpflexRole role);
 
     /**
-     * Write a given message to all the connected and ready peers with
-     * the given role.
+     * Send a given message to all the connected and ready peers with
+     * the given role.  This message can be called from any thread.
      *
-     * @param message the message to write
-     * @param role
+     * @param message the message to write.  The memory will be owned by the pool.
+     * @param role the role to which the message should be sent
+     * @param sync if true then this is being called from the libuv
+     * thread
      */
-    void writeToRole(OpflexMessage& message, OpflexHandler::OpflexRole role);
+    void sendToRole(OpflexMessage* message, 
+                    ofcore::OFConstants::OpflexRole role,
+                    bool sync = false);
+
+    /**
+     * Get the number of connections in a particular role
+     *
+     * @param role the role to search for
+     * @return the count of connections in that role
+     */
+    int getRoleCount(ofcore::OFConstants::OpflexRole role);
 
 private:
     HandlerFactory& factory;
@@ -165,20 +173,32 @@ private:
 
     conn_map_t connections;
     role_map_t roles;
+    bool active;
 
     uv_loop_t client_loop;
     uv_thread_t client_thread;
+    uv_async_t conn_async;
+    uv_async_t cleanup_async;
+    uv_async_t writeq_async;
     uv_timer_t timer;
-    uv_async_t async;
 
     void doRemovePeer(const std::string& hostname, int port);
+    void doAddPeer(const std::string& hostname, int port);
     void doSetRoles(ConnData& cd, uint8_t newroles);
     void updateRole(ConnData& cd, uint8_t newroles, 
-                    OpflexHandler::OpflexRole role);
+                    ofcore::OFConstants::OpflexRole role);
+    void connectionClosed(OpflexClientConnection* conn);
+    uv_loop_t* getLoop() { return &client_loop; }
+    void messagesReady();
 
     static void client_thread_func(void* pool);
-    static void timer_cb(uv_timer_t* handle);
-    static void on_conn_closed(uv_handle_t *handle);
+    static void on_conn_async(uv_async_t *handle);
+    static void on_cleanup_async(uv_async_t *handle);
+    static void on_writeq_async(uv_async_t *handle);
+#ifdef SIMPLE_RPC
+    static void on_conn_closed(OpflexClientConnection* conn);
+    static void on_timer(uv_timer_t* timer);
+#endif
 
     friend class OpflexClientConnection;
 };

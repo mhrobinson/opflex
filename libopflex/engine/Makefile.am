@@ -12,13 +12,13 @@
 
 SUBDIRS = . test
 
-AM_CPPFLAGS = $(BOOST_CPPFLAGS) \
+AM_CPPFLAGS = $(BOOST_CPPFLAGS) -DSIMPLE_RPC \
         -I$(srcdir)/include -I$(top_srcdir)/include \
 	-I$(top_srcdir)/modb/include \
 	-I$(top_srcdir)/logging/include \
 	-I$(top_srcdir)/util/include \
-	-I$(top_srcdir)/comms/include \
-	-I$(top_srcdir)/comms 
+	-I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp \
+	-I$(top_srcdir)/comms/include
 
 AM_CPPFLAGS += -I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp
 
@@ -38,6 +38,8 @@ libengine_la_SOURCES = \
 	include/opflex/engine/internal/OpflexListener.h \
 	include/opflex/engine/internal/OpflexPool.h \
 	include/opflex/engine/internal/ProcessorMessage.h \
+	include/opflex/engine/internal/MockOpflexServerImpl.h \
+	include/opflex/engine/internal/MockServerHandler.h \
 	include/opflex/engine/Processor.h \
 	AbstractObjectListener.cpp \
 	MOSerializer.cpp \
@@ -49,4 +51,6 @@ libengine_la_SOURCES = \
 	OpflexClientConnection.cpp \
 	OpflexServerConnection.cpp \
 	OpflexListener.cpp \
-	OpflexPool.cpp
+	OpflexPool.cpp \
+	MockOpflexServer.cpp \
+	MockServerHandler.cpp

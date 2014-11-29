@@ -22,6 +22,10 @@
 #include <rapidjson/stringbuffer.h>
 #include <uv.h>
 
+#ifndef SIMPLE_RPC
+#include "yajr/yajr.hpp"
+#endif
+
 #pragma once
 #ifndef OPFLEX_ENGINE_OPFLEXCONNECTION_H
 #define OPFLEX_ENGINE_OPFLEXCONNECTION_H
@@ -33,6 +37,7 @@ namespace internal {
 class OpflexPool;
 class OpflexHandler;
 class HandlerFactory;
+class OpflexMessage;
 
 /**
  * Maintain the connection state information for a connection to an
@@ -51,14 +56,24 @@ public:
     virtual ~OpflexConnection();
 
     /**
-     * Connect to the remote host.
+     * Connect to the remote host.  Must be called from the libuv
+     * processing thread.
      */
     virtual void connect();
 
     /**
-     * Disconnect this connection from the remote peer.
+     * Disconnect this connection from the remote peer.  Must be
+     * called from the libuv processing thread.  Will retry if the
+     * connection type supports it.
      */
     virtual void disconnect();
+
+    /**
+     * Disconnect this connection from the remote peer and close the
+     * connection.  Must be called from the libuv processing thread.
+     * Will not retry.
+     */
+    virtual void close();
 
     /**
      * Get the unique name for this component in the policy domain
@@ -90,19 +105,28 @@ public:
     virtual const std::string& getRemotePeer() = 0;
 
     /**
-     * Write the given string buffer to the socket.  Ownership of the
-     * object passes to the connection
+     * Send the opflex message to the remote peer.  This can be called
+     * from any thread.
      *
-     * @param buf the buffer to write
+     * @param message the message to send.  Ownership of the object
+     * passes to the connection.
+     * @param sync if true, send the message synchronously.  This can
+     * only be called if it's called from the uv loop thread.
      */
-    virtual void write(const rapidjson::StringBuffer* buf) = 0;
+    virtual void sendMessage(OpflexMessage* message, bool sync = false);
 
     /**
      * Get the handler associated with this connection
      *
-     * @return the OpflexHandler for the connection
+     * @return the OpflexHandler for the connection.
      */
     virtual OpflexHandler* getHandler() { return handler; }
+
+    /**
+     * Process the write queue for the connection from within the
+     * libuv loop thread
+     */
+    void processWriteQueue();
 
 protected:
     /**
@@ -110,8 +134,13 @@ protected:
      */
     OpflexHandler* handler;
 
-    friend class OpflexHandler;
+    /**
+     * New messages are ready to be written to the socket.
+     * processWriteQueue() must be called.
+     */
+    virtual void messagesReady() = 0;
 
+#ifdef SIMPLE_RPC
     std::stringstream* buffer;
     rapidjson::Document document;
 
@@ -120,8 +149,13 @@ protected:
      * string buffer, ownership of which will pass to the connection
      */
     void write(uv_stream_t* stream, const rapidjson::StringBuffer* buf);
+    /**
+     * Write the string buffer to the final write queue.  Must be
+     * called from the libuv thread
+     * @param buf the buffer to write
+     */
+    virtual void write(const rapidjson::StringBuffer* buf) = 0;
     static void write_cb(uv_write_t* req, int status);
-
     static void read_cb(uv_stream_t* stream, 
                         ssize_t nread, 
                         const uv_buf_t* buf);
@@ -129,11 +163,28 @@ protected:
                          size_t suggested_size,
                          uv_buf_t* buf);
     virtual void dispatch();
+#else
+    /**
+     * Get the peer for this connection
+     */
+    virtual yajr::Peer* getPeer() = 0;
+#endif
 
+private:
+#ifdef SIMPLE_RPC
     typedef std::pair<uv_write_t*, const rapidjson::StringBuffer*> write_t;
     typedef std::list<write_t> write_list_t;
     write_list_t write_list;
-    uv_mutex_t write_mutex;
+#endif
+
+    typedef std::list<OpflexMessage*> write_queue_t;
+    write_queue_t write_queue;
+    uv_mutex_t queue_mutex;
+
+    void doWrite(OpflexMessage* message);
+    void cleanup();
+
+    friend class OpflexHandler;
 };
 
 /**
@@ -144,7 +195,7 @@ public:
     /**
      * Allocate a new OpflexHandler for the connection
      *
-     * @param the connection associated with the handler
+     * @param conn the connection associated with the handler
      * @return a newly-allocated handler that will be owned by the
      * connection
      */

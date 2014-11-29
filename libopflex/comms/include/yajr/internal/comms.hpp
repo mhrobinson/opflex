@@ -14,6 +14,7 @@
 #include <sstream>  /* for basic_stringstream<> */
 #include <yajr/yajr.hpp>
 #include <rapidjson/document.h>
+#include <yajr/rpc/rpc.hpp>
 #include <yajr/rpc/message_factory.hpp>
 #include <yajr/rpc/send_handler.hpp>
 #include <iovec-utils.hh>
@@ -91,12 +92,12 @@ class Peer : public SafeListBaseHook {
 #ifdef COMMS_DEBUG_OBJECT_COUNT
             ++counter;
 #endif
-            uv_idle_init(loop, &idle_);
-            uv_idle_start(&idle_, &onIdleLoop);
-            idle_.data = this;
+            uv_prepare_init(loop, &prepare_);
+            uv_prepare_start(&prepare_, &onPrepareLoop);
+            prepare_.data = this;
         }
 
-#ifndef NDEBUG
+#ifdef COMMS_DEBUG_OBJECT_COUNT 
         static size_t getCounter() {
             return counter;
         }
@@ -114,7 +115,7 @@ class Peer : public SafeListBaseHook {
             return &getLoopData(uv_loop)->peers[peerState];
         }
 
-        void onIdleLoop() __attribute__((no_instrument_function));
+        void onPrepareLoop() __attribute__((no_instrument_function));
 
         void destroy();
 
@@ -143,7 +144,7 @@ class Peer : public SafeListBaseHook {
 
             if (destroying_ && !refCount_) {
                 LOG(INFO) << this << " stopping uv_loop";
-                uv_stop(idle_.loop);
+                uv_stop(prepare_.loop);
                 LOG(INFO) << this << " deleting loop data";
                 delete this;
             }
@@ -155,7 +156,7 @@ class Peer : public SafeListBaseHook {
         friend std::ostream& operator<< (std::ostream&, Peer::LoopData const *);
 
         ~LoopData() {
-#ifndef NDEBUG
+#ifdef COMMS_DEBUG_OBJECT_COUNT
             --counter;
 #endif
         }
@@ -168,10 +169,10 @@ class Peer : public SafeListBaseHook {
             }
         };
 
-        static void onIdleLoop(uv_idle_t *) __attribute__((no_instrument_function));
+        static void onPrepareLoop(uv_prepare_t *) __attribute__((no_instrument_function));
         static void fini(uv_handle_t *);
 
-        uv_idle_t idle_;
+        uv_prepare_t prepare_;
         uint64_t lastRun_;
         bool destroying_;
         uint64_t refCount_;
@@ -217,7 +218,7 @@ class Peer : public SafeListBaseHook {
          ::yajr::Peer::UvLoopSelector uvLoopSelector = NULL,
          Peer::PeerStatus status = kPS_UNINITIALIZED)
             :
-              uvLoopSelector_(uvLoopSelector ? : &uv_default_loop),
+              uvLoopSelector_(uvLoopSelector ? : &uvDefaultLoop),
               uvRefCnt_(1),
               connected_(0),
               destroying_(0),
@@ -226,8 +227,6 @@ class Peer : public SafeListBaseHook {
               status_(status)
             {
                 handle_.data = this;
-                handle_.loop = uvLoopSelector_();
-                getLoopData()->up();
 #ifdef COMMS_DEBUG_OBJECT_COUNT
                 ++counter;
 #endif
@@ -258,8 +257,12 @@ class Peer : public SafeListBaseHook {
 
         LOG(DEBUG) << "deleting " << this;
 
+        onDelete();
+
         delete this;
     }
+
+    virtual void onDelete() {}
 
     virtual void destroy() = 0;
 
@@ -268,7 +271,11 @@ class Peer : public SafeListBaseHook {
 #else
     static
 #endif
-    bool __checkInvariants() const __attribute__((no_instrument_function));
+    bool __checkInvariants()
+#ifndef NDEBUG
+    const
+#endif
+    __attribute__((no_instrument_function));
 
     /**
      * Get the uv_loop_t * for this peer
@@ -322,7 +329,10 @@ class Peer : public SafeListBaseHook {
         --counter;
 #endif
     }
-  private:
+    static uv_loop_t * uvDefaultLoop(void *) {
+        return uv_default_loop();
+    }
+
     Peer::LoopData * getLoopData() const {
         return Peer::LoopData::getLoopData(getUvLoop());
     }
@@ -353,6 +363,8 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
                 lastHeard_(0)
             {
                 req_.data = this;
+                handle_.loop = uvLoopSelector_(getData());
+                getLoopData()->up();
 #ifdef COMMS_DEBUG_OBJECT_COUNT
                 ++counter;
 #endif
@@ -387,6 +399,14 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     }
 
     int write() const;
+
+    void * getData() const {
+        return data_;
+    }
+
+    virtual void onDelete() {
+        connectionHandler_(dynamic_cast<yajr::Peer *>(this), data_, ::yajr::StateChange::DELETE, 0);
+    }
 
     virtual void startKeepAlive(
             uint64_t begin    =  100,
@@ -595,8 +615,8 @@ class ActivePeer : public CommunicationPeer {
 #endif
   public:
     explicit ActivePeer(
-            char const * hostname,
-            char const * service,
+            std::string const & hostname,
+            std::string const & service,
             ::yajr::Peer::StateChangeCb connectionHandler,
             void * data,
             ::yajr::Peer::UvLoopSelector uvLoopSelector = NULL)
@@ -639,11 +659,11 @@ class ActivePeer : public CommunicationPeer {
 #endif
 
     char const * getHostname() const {
-        return hostname_;
+        return hostname_.c_str();
     }
 
     char const * getService() const {
-        return service_;
+        return service_.c_str();
     }
 
   protected:
@@ -653,8 +673,8 @@ class ActivePeer : public CommunicationPeer {
         --counter;
 #endif
     }
-    char const * const hostname_;
-    char const * const service_;
+    std::string const hostname_;
+    std::string const service_;
 };
 
 class PassivePeer : public CommunicationPeer {
@@ -726,7 +746,8 @@ class ListeningPeer : public Peer, virtual public ::yajr::Listener {
             ::yajr::comms::internal::Peer(false, uvLoopSelector, kPS_UNINITIALIZED),
             ::yajr::Listener()
         {
-            _.listener_.uvLoop_ = listenerUvLoop ? : uv_default_loop();
+            handle_.loop = _.listener_.uvLoop_ = listenerUvLoop ? : uv_default_loop();
+            getLoopData()->up();
 #ifdef COMMS_DEBUG_OBJECT_COUNT
             ++counter;
 #endif
@@ -781,7 +802,7 @@ class ListeningPeer : public Peer, virtual public ::yajr::Listener {
         return uvLoopSelector_;
     }
 
-    int setAddrFromIpAndPort(const char * ip_address, uint16_t port);
+    int setAddrFromIpAndPort(const std::string& ip_address, uint16_t port);
 
   private:
     struct sockaddr_storage listen_on_;

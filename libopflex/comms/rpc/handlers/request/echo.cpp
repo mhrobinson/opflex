@@ -15,16 +15,12 @@ void InbReq<&yajr::rpc::method::echo>::process() const {
 
     LOG(DEBUG);
 
-    /* TODO: provide a factory? */
-    OutboundResponse * resp = new OutboundResult(
-            *getPeer(),  /* reply to the sender! */
-            GeneratorFromValue(getPayload()),/* payload from inbound req */
-            getRemoteId()/* id from the inbound req */
-        );
+    OutboundResult (
+            this,
+            GeneratorFromValue(getPayload())      /* payload from inbound req */
+        )
+        . send();
 
-    resp->send();
-
-    /* lifecycle of the response is handled by the framework */
 }
 
 }}

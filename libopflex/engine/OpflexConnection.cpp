@@ -9,10 +9,17 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#include <boost/scoped_ptr.hpp>
+
 #include "opflex/engine/internal/OpflexConnection.h"
 #include "opflex/engine/internal/OpflexHandler.h"
+#include "opflex/engine/internal/OpflexMessage.h"
 #include "opflex/logging/internal/logging.hpp"
 #include "LockGuard.h"
+
+#ifndef SIMPLE_RPC
+#include "yajr/rpc/message_factory.hpp"    
+#endif
 
 namespace opflex {
 namespace engine {
@@ -20,31 +27,57 @@ namespace internal {
 
 using rapidjson::Value;
 using std::string;
+using boost::scoped_ptr;
+#ifndef SIMPLE_RPC
+using yajr::rpc::OutboundRequest;
+using yajr::rpc::OutboundResult;
+using yajr::rpc::OutboundError;
+#endif
 
 OpflexConnection::OpflexConnection(HandlerFactory& handlerFactory)
-    : handler(handlerFactory.newHandler(this)), 
-      buffer(new std::stringstream()) {
-    uv_mutex_init(&write_mutex);
+    : handler(handlerFactory.newHandler(this)) 
+#ifdef SIMPLE_RPC
+    ,buffer(new std::stringstream()) 
+#endif
+{
+    uv_mutex_init(&queue_mutex);
     connect();
 }
 
 OpflexConnection::~OpflexConnection() {
-    disconnect();
+    cleanup();
     if (handler)
         delete handler;
+#ifdef SIMPLE_RPC
     if (buffer)
         delete buffer;
-    uv_mutex_destroy(&write_mutex);
+#endif
+    uv_mutex_destroy(&queue_mutex);
 }
 
 void OpflexConnection::connect() {}
 
-void OpflexConnection::disconnect() {}
+void OpflexConnection::cleanup() {
+    util::LockGuard guard(&queue_mutex);
+    while (write_queue.size() > 0) {
+        delete write_queue.front();
+        write_queue.pop_front();
+    }
+}
+
+void OpflexConnection::disconnect() {
+    cleanup();
+}
+
+void OpflexConnection::close() {
+    disconnect();
+}
 
 bool OpflexConnection::isReady() { 
     return handler->isReady();
 }
 
+#ifdef SIMPLE_RPC
 void OpflexConnection::alloc_cb(uv_handle_t* handle,
                                 size_t suggested_size,
                                 uv_buf_t* buf) {
@@ -72,7 +105,6 @@ void OpflexConnection::read_cb(uv_stream_t* stream,
     if (buf->base)
         free(buf->base);
 }
-
 void OpflexConnection::dispatch() {
     document.Parse(buffer->str().c_str());
     delete buffer;
@@ -152,27 +184,27 @@ void OpflexConnection::dispatch() {
         }
 
         if (id == "send_identity") {
-            handler->handleSendIdentityRes(idv, result);
+            handler->handleSendIdentityRes(result);
             //} else if (id == "echo") {
-            //    handler->handleEchoRes(idv, result);
+            //    handler->handleEchoRes(result);
         } else if (id == "policy_resolve") {
-            handler->handlePolicyResolveRes(idv, result);
+            handler->handlePolicyResolveRes(result);
         } else if (id == "policy_unresolve") {
-            handler->handlePolicyUnresolveRes(idv, result);
+            handler->handlePolicyUnresolveRes(result);
         } else if (id == "policy_update") {
-            handler->handlePolicyUpdateRes(idv, result);
+            handler->handlePolicyUpdateRes(result);
         } else if (id == "endpoint_declare") {
-            handler->handleEPDeclareRes(idv, result);
+            handler->handleEPDeclareRes(result);
         } else if (id == "endpoint_undeclare") {
-            handler->handleEPUndeclareRes(idv, result);
+            handler->handleEPUndeclareRes(result);
         } else if (id == "endpoint_resolve") {
-            handler->handleEPResolveRes(idv, result);
+            handler->handleEPResolveRes(result);
         } else if (id == "endpoint_unresolve") {
-            handler->handleEPUnresolveRes(idv, result);
+            handler->handleEPUnresolveRes(result);
         } else if (id == "endpoint_update") {
-            handler->handleEPUpdateRes(idv, result);
+            handler->handleEPUpdateRes(result);
         } else if (id == "state_report") {
-            handler->handleStateReportRes(idv, result);
+            handler->handleStateReportRes(result);
         }
         
     } else if (document.HasMember("error")) {
@@ -193,27 +225,27 @@ void OpflexConnection::dispatch() {
         }
 
         if (id == "send_identity") {
-            handler->handleSendIdentityErr(idv, error);
+            handler->handleSendIdentityErr(error);
             //} else if (id == "echo") {
-            //    handler->handleEchoErr(idv, error);
+            //    handler->handleEchoErr(error);
         } else if (id == "policy_resolve") {
-            handler->handlePolicyResolveErr(idv, error);
+            handler->handlePolicyResolveErr(error);
         } else if (id == "policy_unresolve") {
-            handler->handlePolicyUnresolveErr(idv, error);
+            handler->handlePolicyUnresolveErr(error);
         } else if (id == "policy_update") {
-            handler->handlePolicyUpdateErr(idv, error);
+            handler->handlePolicyUpdateErr(error);
         } else if (id == "endpoint_declare") {
-            handler->handleEPDeclareErr(idv, error);
+            handler->handleEPDeclareErr(error);
         } else if (id == "endpoint_undeclare") {
-            handler->handleEPUndeclareErr(idv, error);
+            handler->handleEPUndeclareErr(error);
         } else if (id == "endpoint_resolve") {
-            handler->handleEPResolveErr(idv, error);
+            handler->handleEPResolveErr(error);
         } else if (id == "endpoint_unresolve") {
-            handler->handleEPUnresolveErr(idv, error);
+            handler->handleEPUnresolveErr(error);
         } else if (id == "endpoint_update") {
-            handler->handleEPUpdateErr(idv, error);
+            handler->handleEPUpdateErr(error);
         } else if (id == "state_report") {
-            handler->handleStateReportErr(idv, error);
+            handler->handleStateReportErr(error);
         }
     }
 }
@@ -221,32 +253,26 @@ void OpflexConnection::dispatch() {
 void OpflexConnection::write(uv_stream_t* stream,
                              const rapidjson::StringBuffer* buf) {
     uv_write_t* req = (uv_write_t*)malloc(sizeof(uv_write_t));
-    {
-        util::LockGuard guard(&write_mutex);
-        write_list.push_back(std::make_pair(req, buf));
-        uv_buf_t ubuf;
-        ubuf.base = (char*)buf->GetString();
-        ubuf.len = buf->GetSize();
-        int rc = uv_write(req, stream, &ubuf, 1, write_cb);
-        if (rc < 0) {
-            LOG(ERROR) << "[" << getRemotePeer() << "] " 
-                       << "Could not write to socket: "
-                       << uv_strerror(rc);
-            disconnect();
-        }
+    write_list.push_back(std::make_pair(req, buf));
+    uv_buf_t ubuf;
+    ubuf.base = (char*)buf->GetString();
+    ubuf.len = buf->GetSize();
+    int rc = uv_write(req, stream, &ubuf, 1, write_cb);
+    if (rc < 0) {
+        LOG(ERROR) << "[" << getRemotePeer() << "] " 
+                   << "Could not write to socket: "
+                   << uv_strerror(rc);
+        disconnect();
     }
 }
 
 void OpflexConnection::write_cb(uv_write_t* req,
                                 int status) {
     OpflexConnection* conn = (OpflexConnection*)req->handle->data;
-    {
-        util::LockGuard guard(&conn->write_mutex);
-        write_t& wt = conn->write_list.front();
-        free(wt.first);
-        delete wt.second;
-        conn->write_list.pop_front();
-    }
+    write_t& wt = conn->write_list.front();
+    free(wt.first);
+    delete wt.second;
+    conn->write_list.pop_front();
 
     if (status < 0) {
         LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
@@ -254,6 +280,84 @@ void OpflexConnection::write_cb(uv_write_t* req,
                    << uv_strerror(status);
         conn->disconnect();
     }
+}
+
+#else /* SIMPLE_RPC */
+
+class PayloadWrapper {
+public:
+    PayloadWrapper(OpflexMessage* message_)
+        : message(message_) { }
+
+    bool operator()(yajr::rpc::SendHandler& handler) {
+        message->serializePayload(handler);
+        return true;
+    }
+
+    OpflexMessage* message;
+};
+#endif
+
+void OpflexConnection::doWrite(OpflexMessage* message) {
+#ifdef SIMPLE_RPC
+    write(message->serialize());
+#else
+    if (getPeer() == NULL) return;
+
+    PayloadWrapper wrapper(message);
+    switch (message->getType()) {
+    case OpflexMessage::REQUEST:
+        {
+            yajr::rpc::MethodName method(message->getMethod().c_str());
+            yajr::rpc::OutboundMessage* outm;
+            outm = new OutboundRequest(*getPeer(),
+                                       wrapper,
+                                       &method,
+                                       0);
+            outm->send();
+        }
+        break;
+    case OpflexMessage::RESPONSE:
+        {
+            yajr::rpc::OutboundMessage* outm;
+            outm = new OutboundResult(*getPeer(),
+                                      wrapper,
+                                      message->getId());
+            outm->send();
+        }
+        break;
+    case OpflexMessage::ERROR_RESPONSE:
+        {
+            yajr::rpc::OutboundMessage* outm;
+            outm = new OutboundError(*getPeer(),
+                                     wrapper,
+                                     message->getId());
+            outm->send();
+        }
+        break;
+    }
+#endif
+}
+
+void OpflexConnection::processWriteQueue() {
+    util::LockGuard guard(&queue_mutex);
+    while (write_queue.size() > 0) {
+        scoped_ptr<OpflexMessage> message(write_queue.front());
+        write_queue.pop_front();
+        doWrite(message.get());
+    }
+
+}
+
+void OpflexConnection::sendMessage(OpflexMessage* message, bool sync) {
+    if (sync) {
+        scoped_ptr<OpflexMessage> messagep(message);
+        doWrite(message);
+    } else {
+        util::LockGuard guard(&queue_mutex);
+        write_queue.push_back(message);
+    }
+    messagesReady();
 }
 
 } /* namespace internal */

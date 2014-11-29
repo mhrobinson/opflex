@@ -142,6 +142,7 @@ public:
     /**
      * A new client connection is ready and the resolver state must be
      * synchronized to the server.
+     * @param conn the new connection object
      */
     void connectionReady(internal::OpflexConnection* conn);
 
@@ -216,6 +217,11 @@ private:
          * Whether the item was written locally
          */
         bool local;
+
+        /**
+         * The last time a resolve request was made for the item
+         */
+        uint64_t resolve_time;
     };
 
     /**
@@ -237,6 +243,7 @@ private:
             details->state = state_;
             details->refcount = 0;
             details->local = local_;
+            details->resolve_time = 0;
         }
         ~item() { if (details) delete details; }
         item& operator=( const item& rhs ) {
@@ -307,14 +314,6 @@ private:
      */
     object_state_t obj_state;
     uv_mutex_t item_mutex;
-    uv_cond_t item_cond;
-
-    /**
-     * Processing thread
-     */
-    uv_thread_t proc_thread;
-    volatile bool proc_shouldRun;
-    static void proc_thread_func(void* processor);
 
     /**
      * Processing delay to allow batching updates
@@ -322,13 +321,18 @@ private:
     uint64_t processingDelay;
 
     /**
-     * Timer to wake up processing thread periodically
+     * Processing thread
      */
-    uv_loop_t timer_loop;
-    uv_thread_t timer_loop_thread;
+    uv_loop_t proc_loop;
+    uv_thread_t proc_thread;
+    volatile bool proc_active;
+    uv_async_t cleanup_async;
+    uv_async_t proc_async;
     uv_timer_t proc_timer;
-    static void timer_thread_func(void* processor);
+    static void proc_thread_func(void* processor);
     static void timer_callback(uv_timer_t* handle);
+    static void cleanup_async_cb(uv_async_t *handle);
+    static void proc_async_cb(uv_async_t *handle);
 
     bool hasWork(/* out */ obj_state_by_exp::iterator& it);
     void addRef(obj_state_by_exp::iterator& it,
@@ -339,10 +343,11 @@ private:
     void updateItemExpiration(obj_state_by_exp::iterator& it);
     bool isOrphan(const item& item);
     bool isParentSyncObject(const item& item);
+    void doProcess();
     void doObjectUpdated(modb::class_id_t class_id, 
                          const modb::URI& uri,
                          bool remote);
-    bool resolveObj(modb::ClassInfo::class_type_t type, const item& it);
+    bool resolveObj(modb::ClassInfo::class_type_t type, const item& it, bool checkTime = true);
     bool declareObj(modb::ClassInfo::class_type_t type, const item& it);
 
     friend class MOSerializer;

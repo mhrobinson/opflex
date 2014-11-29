@@ -39,6 +39,7 @@ using internal::MOSerializer;
 using modb::mointernal::StoreClient;
 using rapidjson::Value;
 using rapidjson::Writer;
+using ofcore::OFConstants;
 
 class SendIdentityReq : public OpflexMessage {
 public:
@@ -48,8 +49,18 @@ public:
         : OpflexMessage("send_identity", REQUEST),
           name(name_), domain(domain_), roles(roles_) {}
 
+#ifndef SIMPLE_RPC
+    virtual void serializePayload(yajr::rpc::SendHandler& writer) {
+        (*this)(writer);
+    }
+#endif
+
     virtual void serializePayload(MessageWriter& writer) {
         (*this)(writer);
+    }
+
+    virtual SendIdentityReq* clone() { 
+        return new SendIdentityReq(*this);
     }
 
     template <typename T>
@@ -64,13 +75,13 @@ public:
         writer.String(domain.c_str());
         writer.String("my_role");
         writer.StartArray();
-        if (roles & OpflexHandler::POLICY_ELEMENT)
+        if (roles & OFConstants::POLICY_ELEMENT)
             writer.String("policy_element");
-        if (roles & OpflexHandler::POLICY_REPOSITORY)
+        if (roles & OFConstants::POLICY_REPOSITORY)
             writer.String("policy_repository");
-        if (roles & OpflexHandler::ENDPOINT_REGISTRY)
+        if (roles & OFConstants::ENDPOINT_REGISTRY)
             writer.String("endpoint_registry");
-        if (roles & OpflexHandler::OBSERVER)
+        if (roles & OFConstants::OBSERVER)
             writer.String("observer");
         writer.EndArray();
         writer.EndObject();
@@ -89,10 +100,11 @@ void OpflexPEHandler::connected() {
     setState(CONNECTED);
 
     OpflexPool& pool = getProcessor()->getPool();
-    SendIdentityReq req(pool.getName(),
-                        pool.getDomain(),
-                        OpflexHandler::POLICY_ELEMENT);
-    getConnection()->write(req.serialize());
+    SendIdentityReq* req = 
+        new SendIdentityReq(pool.getName(),
+                            pool.getDomain(),
+                            OFConstants::POLICY_ELEMENT);
+    getConnection()->sendMessage(req, true);
 }
 
 void OpflexPEHandler::disconnected() {
@@ -110,8 +122,7 @@ void OpflexPEHandler::ready() {
     getProcessor()->connectionReady(getConnection());
 }
 
-void OpflexPEHandler::handleSendIdentityRes(const rapidjson::Value& id,
-                                            const Value& payload) {
+void OpflexPEHandler::handleSendIdentityRes(const Value& payload) {
     OpflexPool& pool = getProcessor()->getPool();
     OpflexClientConnection* conn = (OpflexClientConnection*)getConnection();
 
@@ -183,13 +194,13 @@ void OpflexPEHandler::handleSendIdentityRes(const rapidjson::Value& id,
 
                     string rolestr = it->GetString();
                     if (rolestr == "policy_element") {
-                        peerRoles |= OpflexHandler::POLICY_ELEMENT;
+                        peerRoles |= OFConstants::POLICY_ELEMENT;
                     } else if (rolestr == "policy_repository") {
-                        peerRoles |= OpflexHandler::POLICY_REPOSITORY;
+                        peerRoles |= OFConstants::POLICY_REPOSITORY;
                     } else if (rolestr == "endpoint_registry") {
-                        peerRoles |= OpflexHandler::ENDPOINT_REGISTRY;
+                        peerRoles |= OFConstants::ENDPOINT_REGISTRY;
                     } else if (rolestr == "observer") {
-                        peerRoles |= OpflexHandler::OBSERVER;
+                        peerRoles |= OFConstants::OBSERVER;
                     }
                 }
             }
@@ -198,13 +209,12 @@ void OpflexPEHandler::handleSendIdentityRes(const rapidjson::Value& id,
         ready();
     } else {
         LOG(INFO) << "[" << getConnection()->getRemotePeer() << "] " 
-                  << "Current peer not found in peer list; disconnecting";
-        conn->disconnect();
+                  << "Current peer not found in peer list; closing";
+        conn->close();
     }
 }
 
-void OpflexPEHandler::handlePolicyResolveRes(const rapidjson::Value& id,
-                                             const Value& payload) {
+void OpflexPEHandler::handlePolicyResolveRes(const Value& payload) {
     StoreClient* client = getProcessor()->getSystemClient();
     MOSerializer& serializer = getProcessor()->getSerializer();
     StoreClient::notif_t notifs;
@@ -322,23 +332,19 @@ void OpflexPEHandler::handlePolicyUpdateReq(const rapidjson::Value& id,
     client->deliverNotifications(notifs);
 }
 
-void OpflexPEHandler::handlePolicyUnresolveRes(const rapidjson::Value& id,
-                                               const rapidjson::Value& payload) {
+void OpflexPEHandler::handlePolicyUnresolveRes(const rapidjson::Value& payload) {
     // nothing to do
 }
 
-void OpflexPEHandler::handleEPDeclareRes(const rapidjson::Value& id,
-                                         const rapidjson::Value& payload) {
+void OpflexPEHandler::handleEPDeclareRes(const rapidjson::Value& payload) {
     // nothing to do
 }
 
-void OpflexPEHandler::handleEPUndeclareRes(const rapidjson::Value& id,
-                                           const rapidjson::Value& payload) {
+void OpflexPEHandler::handleEPUndeclareRes(const rapidjson::Value& payload) {
     // nothing to do
 }
 
-void OpflexPEHandler::handleEPResolveRes(const rapidjson::Value& id,
-                                         const rapidjson::Value& payload) {
+void OpflexPEHandler::handleEPResolveRes(const rapidjson::Value& payload) {
     StoreClient* client = getProcessor()->getSystemClient();
     MOSerializer& serializer = getProcessor()->getSerializer();
     StoreClient::notif_t notifs;
@@ -359,8 +365,7 @@ void OpflexPEHandler::handleEPResolveRes(const rapidjson::Value& id,
     client->deliverNotifications(notifs);
 }
 
-void OpflexPEHandler::handleEPUnresolveRes(const rapidjson::Value& id,
-                                           const rapidjson::Value& payload) {
+void OpflexPEHandler::handleEPUnresolveRes(const rapidjson::Value& payload) {
     // nothing to do
 }
 
@@ -448,8 +453,7 @@ void OpflexPEHandler::handleEPUpdateReq(const rapidjson::Value& id,
     client->deliverNotifications(notifs);
 }
 
-void OpflexPEHandler::handleStateReportRes(const rapidjson::Value& id,
-                                           const rapidjson::Value& payload) {
+void OpflexPEHandler::handleStateReportRes(const rapidjson::Value& payload) {
     // nothing to do
 }
 

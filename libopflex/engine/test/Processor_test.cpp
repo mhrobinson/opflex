@@ -23,10 +23,10 @@
 #include "opflex/engine/internal/MOSerializer.h"
 #include "opflex/engine/Processor.h"
 #include "opflex/logging/StdOutLogHandler.h"
+#include "opflex/engine/internal/MockOpflexServerImpl.h"
 
 #include "BaseFixture.h"
 #include "TestListener.h"
-#include "MockOpflexServer.h"
 
 using namespace opflex::engine;
 using namespace opflex::engine::internal;
@@ -42,11 +42,13 @@ using mointernal::ObjectInstance;
 using std::out_of_range;
 using std::make_pair;
 using std::vector;
+using opflex::ofcore::OFConstants;
+using opflex::test::MockOpflexServer;
 
 #define SERVER_ROLES \
-        (OpflexHandler::POLICY_REPOSITORY |     \
-         OpflexHandler::ENDPOINT_REGISTRY |     \
-         OpflexHandler::OBSERVER)
+        (OFConstants::POLICY_REPOSITORY |     \
+         OFConstants::ENDPOINT_REGISTRY |     \
+         OFConstants::OBSERVER)
 #define LOCALHOST "127.0.0.1"
 
 class Fixture : public BaseFixture {
@@ -70,17 +72,19 @@ public:
         : mockServer(8009, SERVER_ROLES,
                      list_of(make_pair(SERVER_ROLES, LOCALHOST":8009")),
                      md) {
+        mockServer.start();
+        WAIT_FOR(mockServer.getListener().isListening(), 1000);
     }
 
     ~ServerFixture() {
-
+        mockServer.stop();
     }
 
     void startClient() {
         processor.addPeer(LOCALHOST, 8009);
     }
 
-    MockOpflexServer mockServer;
+    MockOpflexServerImpl mockServer;
 };
 
 BOOST_AUTO_TEST_SUITE(Processor_test)
@@ -156,9 +160,15 @@ BOOST_FIXTURE_TEST_CASE( bootstrap, Fixture ) {
     MockOpflexServer::peer_t p2 =
         make_pair(SERVER_ROLES, "127.0.0.1:8010");
 
-    MockOpflexServer anycastServer(8011, 0, list_of(p1)(p2), md);
-    MockOpflexServer peer1(8009, SERVER_ROLES, list_of(p1)(p2), md);
-    MockOpflexServer peer2(8010, SERVER_ROLES, list_of(p1)(p2), md);
+    MockOpflexServerImpl anycastServer(8011, 0, list_of(p1)(p2), md);
+    MockOpflexServerImpl peer1(8009, SERVER_ROLES, list_of(p1)(p2), md);
+    MockOpflexServerImpl peer2(8010, SERVER_ROLES, list_of(p1)(p2), md);
+    anycastServer.start();
+    peer1.start();
+    peer2.start();
+    WAIT_FOR(anycastServer.getListener().isListening(), 1000);
+    WAIT_FOR(peer1.getListener().isListening(), 1000);
+    WAIT_FOR(peer2.getListener().isListening(), 1000);
 
     processor.addPeer(LOCALHOST, 8011);
 
@@ -168,6 +178,10 @@ BOOST_FIXTURE_TEST_CASE( bootstrap, Fixture ) {
     WAIT_FOR(connReady(processor.getPool(), LOCALHOST, 8009), 1000);
     WAIT_FOR(connReady(processor.getPool(), LOCALHOST, 8010), 1000);
     WAIT_FOR(processor.getPool().getPeer(LOCALHOST, 8011) == NULL, 1000);
+
+    anycastServer.stop();
+    peer1.stop();
+    peer2.stop();
 }
 
 class EndpointDeclFixture : public ServerFixture {
@@ -380,6 +394,19 @@ BOOST_FIXTURE_TEST_CASE( policy_resolve, PolicyFixture ) {
     notifs.clear();
 
     WAIT_FOR(!mockServer.getListener().applyConnPred(resolutions_pred, NULL), 1000);
+
+    client2->put(5, c5u, oi5);
+    client2->queueNotification(5, c5u, notifs);
+    client2->deliverNotifications(notifs);
+    notifs.clear();
+    WAIT_FOR(itemPresent(client2, 4, c4u), 1000);
+
+    client2->remove(5, c5u, false, &notifs);
+    client2->queueNotification(5, c5u, notifs);
+    client2->deliverNotifications(notifs);
+    notifs.clear();
+
+    WAIT_FOR(!mockServer.getListener().applyConnPred(resolutions_pred, NULL), 1000);
 }
 
 // test policy resolve after connection ready
@@ -550,7 +577,7 @@ BOOST_FIXTURE_TEST_CASE( endpoint_resolve, EndpointResFixture ) {
     replace.push_back(make_pair(8, c8u));
     mockServer.endpointUpdate(replace, del);
     WAIT_FOR("moretesting" == client2->get(8, c8u)->getString(17), 1000);
-    BOOST_CHECK_EQUAL("moretesting2", client2->get(10, c10u)->getString(21));
+    WAIT_FOR("moretesting2" == client2->get(10, c10u)->getString(21), 1000);
 
     oi8->setString(17, "evenmore");
     rclient->put(8, c8u, oi8);

@@ -13,6 +13,7 @@
 
 #include "opflex/engine/internal/OpflexServerConnection.h"
 #include "opflex/engine/internal/OpflexListener.h"
+#include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/logging/internal/logging.hpp"
 #include "LockGuard.h"
 
@@ -25,6 +26,7 @@ using std::string;
 OpflexServerConnection::OpflexServerConnection(OpflexListener* listener_)
     : OpflexConnection(listener_->handlerFactory), 
       listener(listener_) {
+#ifdef SIMPLE_RPC
     uv_tcp_init(&listener->server_loop, &tcp_handle);
     tcp_handle.data = this;
     int rc = uv_accept((uv_stream_t*)&listener->bind_socket, 
@@ -53,6 +55,11 @@ OpflexServerConnection::OpflexServerConnection(OpflexListener* listener_)
     }
 
     uv_read_start((uv_stream_t*)&tcp_handle, alloc_cb, read_cb);
+    handler->connected();
+#else
+
+#endif
+
 }
 
 OpflexServerConnection::~OpflexServerConnection() {
@@ -67,26 +74,74 @@ const std::string& OpflexServerConnection::getDomain() {
     return listener->getDomain();
 }
 
+#ifdef SIMPLE_RPC
 void OpflexServerConnection::shutdown_cb(uv_shutdown_t* req, int status) {
     OpflexServerConnection* conn = 
         (OpflexServerConnection*)req->handle->data;
     uv_close((uv_handle_t*)&conn->tcp_handle, OpflexListener::on_conn_closed);
 }
+#else
+
+uv_loop_t* OpflexServerConnection::loop_selector(void * data) {
+    OpflexServerConnection* conn = (OpflexServerConnection*)data;
+    return conn->getListener()->getLoop();
+}
+
+void OpflexServerConnection::on_state_change(yajr::Peer * p, void * data, 
+                                             yajr::StateChange::To stateChange,
+                                             int error) {
+    OpflexServerConnection* conn = (OpflexServerConnection*)data;
+    conn->peer = p;
+    switch (stateChange) {
+    case yajr::StateChange::CONNECT:
+        conn->remote_peer = "UNKNOWN";
+        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
+                  << "New server connection";
+        conn->handler->connected();
+        break;
+    case yajr::StateChange::DISCONNECT:
+        LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
+                   << "Disconnected";
+        break;
+    case yajr::StateChange::FAILURE:
+        LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
+                   << "Connection error: " << uv_strerror(error);
+        break;
+    case yajr::StateChange::DELETE:
+        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
+                  << "Connection closed";
+        conn->getListener()->connectionClosed(conn);
+        break;
+    }
+}
+
+#endif
 
 void OpflexServerConnection::disconnect() {
+#ifdef SIMPLE_RPC
     uv_read_stop((uv_stream_t*)&tcp_handle);
     {
-        util::LockGuard guard(&write_mutex);
         int rc = uv_shutdown(&shutdown, (uv_stream_t*)&tcp_handle, shutdown_cb);
         if (rc < 0) {
             LOG(ERROR) << "[" << getRemotePeer() << "] " 
                        << "Could not shut down socket: " << uv_strerror(rc);
         }
     }
+#else
+    if (peer)
+        peer->destroy();
+#endif
+    OpflexConnection::disconnect();
 }
 
+#ifdef SIMPLE_RPC
 void OpflexServerConnection::write(const rapidjson::StringBuffer* buf) {
     OpflexConnection::write((uv_stream_t*)&tcp_handle, buf);
+}
+#endif
+
+void OpflexServerConnection::messagesReady() {
+    listener->messagesReady();
 }
 
 } /* namespace internal */
