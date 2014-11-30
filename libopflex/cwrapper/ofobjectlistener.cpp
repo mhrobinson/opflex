@@ -12,6 +12,7 @@
 #include "opflex/modb/ObjectListener.h"
 #include "opflex/c/ofobjectlistener_c.h"
 
+using opflex::modb::class_id_t;
 using opflex::modb::ObjectListener;
 using opflex::modb::URI;
 
@@ -23,7 +24,7 @@ public:
     virtual ~CObjectListener() {}
 
     virtual void objectUpdated(class_id_t class_id, const URI& uri) {
-        callback(user_data, class_id, (ofuri_p*)&uri);
+        callback(user_data, (ofclass_id_t)class_id, (ofuri_p*)&uri);
     }
 
     void* user_data;

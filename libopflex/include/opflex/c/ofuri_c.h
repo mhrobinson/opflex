@@ -11,6 +11,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#ifdef __cplusplus
+  #include <cstddef>
+#else
+  #include <stddef.h>
+#endif
+
 #include "ofcore_c.h"
 
 #ifndef OPFLEX_C_OFURI_H

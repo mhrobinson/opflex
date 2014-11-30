@@ -11,6 +11,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#if (__cplusplus > 199711L)
+  #include <cstdint>
+#else
+  #include <stdint.h>
+#endif
+
 #ifndef OPFLEX_C_OFCORE_H
 #define OPFLEX_C_OFCORE_H
 
@@ -89,7 +95,7 @@ typedef void* ofobj_p;
 /**
  * A unique class ID
  */
-typedef unsigned long class_id_t;
+typedef uint64_t ofclass_id_t;
 
 /** @} defs */
 /** @} ccore */

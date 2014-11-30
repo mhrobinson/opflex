@@ -45,7 +45,7 @@ typedef ofobj_p ofobjectlistener_p;
  * @param class_id the class ID of the affected class
  * @param uri the affected URI
  */
-typedef void (*ofnotify_p)(void* user_data, class_id_t class_id, ofuri_p uri);
+typedef void (*ofnotify_p)(void* user_data, ofclass_id_t class_id, ofuri_p uri);
 
 #ifdef __cplusplus
 extern "C" {
