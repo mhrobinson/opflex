@@ -10,8 +10,9 @@
 #ifndef _INCLUDE__YAJR__YAJR_HPP
 #define _INCLUDE__YAJR__YAJR_HPP
 
-#include <string>
 #include <uv.h>
+
+#include <string>
 
 namespace yajr {
 
@@ -113,11 +114,23 @@ struct Peer {
     );
 
     /**
+     * @brief disconnect the peer
+     *
+     * Disconnect the peer. Active peers will re-attempt to connect, passive
+     * peers will be destroyed asynchronously.
+     *
+     * For passive peers, disconnect() and destroy() have the same effect.
+     */
+    virtual void disconnect() = 0;
+
+    /**
      * @brief perform an asynchronous delete
      *
      * Perform an asynchronous delete of this communication peer, disconnecting
      * it if still connected and destroying it as soon as no more callbacks are
      * pending for this Peer.
+     *
+     * For passive peers, disconnect() and destroy() have the same effect.
      */
     virtual void destroy() = 0;
 
@@ -128,6 +141,23 @@ struct Peer {
      * is provided to the State Change callback
      */
     virtual void * getData() const = 0;
+
+    /**
+     * @brief retrieves the address of the remote peer
+     *
+     * Retrieves the address of the remote peer the underlying socket is
+     * connected to, in the buffer pointed to by \p remoteAddress. The integer
+     * pointed to by the \p len argument should be initialized to indicate the
+     * amount of space pointed to by \p remoteAddress. On return it contains the
+     * actual size of the structure returned (in bytes). The structure is
+     * truncated if the buffer provided is too small. In this case, \p *len will
+     * return a value greater than was supplied to the call.
+     *
+     * The peer must be connected for this method to work.
+     *
+     * @return An error code is returned on failure, or 0 on success.
+     */
+    virtual int getPeerName(struct sockaddr* remoteAddress, int* len) const = 0;
 
     /**
      * @brief start performing periodic keep-alive

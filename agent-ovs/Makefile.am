@@ -37,6 +37,7 @@ libagent_ovs_la_LIBADD = \
 	$(BOOST_SYSTEM_LIB) \
 	$(BOOST_FILESYSTEM_LIB) \
 	$(BOOST_THREAD_LIB) \
+	$(BOOST_ASIO_LIB) \
 	$(libopenvswitch_LIBS) \
 	$(libofproto_LIBS)
 
@@ -51,6 +52,7 @@ libagent_ovs_la_SOURCES = \
 	src/include/FSEndpointSource.h \
 	src/include/Renderer.h \
 	src/include/StitchedModeRenderer.h \
+	src/include/TunnelEpManager.h \
 	src/include/FlowExecutor.h \
 	src/include/FlowManager.h \
 	src/include/ovs.h \
@@ -58,6 +60,7 @@ libagent_ovs_la_SOURCES = \
 	src/include/ActionBuilder.h \
 	src/include/SwitchConnection.h \
 	src/include/PortMapper.h \
+	src/include/StatsManager.h \
 	src/include/Agent.h \
 	src/include/cmd.h \
 	src/BoostLogHandler.cpp \
@@ -68,12 +71,14 @@ libagent_ovs_la_SOURCES = \
 	src/FSEndpointSource.cpp \
 	src/Renderer.cpp \
 	src/StitchedModeRenderer.cpp \
+	src/TunnelEpManager.cpp \
 	src/FlowManager.cpp \
 	src/TableState.cpp \
 	src/FlowExecutor.cpp \
 	src/ActionBuilder.cpp \
 	src/SwitchConnection.cpp \
 	src/PortMapper.cpp \
+	src/StatsManager.cpp \
 	src/cmd.cpp \
 	src/Agent.cpp
 

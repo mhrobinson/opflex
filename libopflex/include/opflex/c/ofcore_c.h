@@ -20,6 +20,8 @@
 #ifndef OPFLEX_C_OFCORE_H
 #define OPFLEX_C_OFCORE_H
 
+#include <stdint.h>
+
 /**
  * @defgroup cwrapper C Wrapper Interface
  *

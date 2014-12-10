@@ -8,6 +8,7 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#include <sstream>
 #include <boost/test/unit_test.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/foreach.hpp>
@@ -18,6 +19,7 @@
 #include "FlowExecutor.h"
 
 #include "ModbFixture.h"
+#include "TableState.h"
 
 using namespace std;
 using namespace boost::assign;
@@ -29,13 +31,18 @@ using namespace ovsagent;
 
 typedef pair<FlowEdit::TYPE, string> MOD;
 
+static string CanonicalizeGroupEntryStr(const string& entryStr);
+
 class MockFlowExecutor : public FlowExecutor {
 public:
-    MockFlowExecutor() {}
+    MockFlowExecutor(): ignoreFlowMods(false) {}
     ~MockFlowExecutor() {}
 
     bool Execute(const FlowEdit& flowEdits) {
-        const char *modStr[] = {"A", "M", "D"};
+        if (ignoreFlowMods) {
+            return true;
+        }
+        const char *modStr[] = {"ADD", "MOD", "DEL"};
         struct ds strBuf;
         ds_init(&strBuf);
 
@@ -44,34 +51,65 @@ public:
             string str = (const char*)(ds_cstr(&strBuf)+1); // trim space
             const char *mod = modStr[ed.first];
 
-            LOG(DEBUG) << "*** " << mod << "|" << str;
-            BOOST_CHECK_MESSAGE(!mods.empty(), "\ngot " << mod << "|" << str);
+            LOG(DEBUG) << "*** FlowMod " << ed;
+            BOOST_CHECK_MESSAGE(!mods.empty(), "\nexp:\ngot: " << ed);
             if (!mods.empty()) {
                 MOD exp = mods.front();
                 mods.pop_front();
                 BOOST_CHECK_MESSAGE(exp.first == ed.first,
                         "\nexp: " << modStr[exp.first] <<
-                        "\ngot: " << mod << "|" << str);
+                        "\ngot: " << ed);
                 BOOST_CHECK_MESSAGE(exp.second == str,
                         "\nexp: " << modStr[exp.first] << "|" << exp.second <<
-                        "\ngot: " << mod << "|" << str);
+                        "\ngot: " << ed);
             }
             ds_clear(&strBuf);
         }
         ds_destroy(&strBuf);
         return true;
     }
+    bool Execute(const GroupEdit& groupEdits) {
+        BOOST_FOREACH(const GroupEdit::Entry& ed, groupEdits.edits) {
+            LOG(DEBUG) << "*** GroupMod " << ed;
+            stringstream ss;
+            ss << ed;
+            string edStr = CanonicalizeGroupEntryStr(ss.str());
+
+            BOOST_CHECK_MESSAGE(!groupMods.empty(), "\nexp:\ngot: " << edStr);
+            if (!groupMods.empty()) {
+                string exp = groupMods.front();
+                groupMods.pop_front();
+                BOOST_CHECK_MESSAGE(exp == edStr,
+                        "\nexp: " << exp << "\ngot: " << edStr);
+            }
+        }
+        return true;
+    }
     void Expect(FlowEdit::TYPE mod, const string& fe) {
+        ignoreFlowMods = false;
         mods.push_back(MOD(mod, fe));
     }
     void Expect(FlowEdit::TYPE mod, const vector<string>& fe) {
+        ignoreFlowMods = false;
         BOOST_FOREACH(const string& s, fe) {
             mods.push_back(MOD(mod, s));
         }
     }
+    void ExpectGroup(FlowEdit::TYPE mod, const string& ge) {
+        const char *modStr[] = {"ADD", "MOD", "DEL"};
+        groupMods.push_back(CanonicalizeGroupEntryStr(
+                string(modStr[mod]) + "|" + ge));
+    }
+    void IgnoreFlowMods() {
+        ignoreFlowMods = true;
+        mods.clear();
+    }
     bool IsEmpty() { return mods.empty(); }
+    bool IsGroupEmpty() { return groupMods.empty(); }
 
     std::list<MOD> mods;
+    std::list<string> groupMods;
+    bool ignoreFlowMods;
 };
 
 class MockPortMapper : public PortMapper {
@@ -82,20 +120,54 @@ public:
     boost::unordered_map<string, uint32_t> ports;
 };
 
+class MockSwitchConnection : public SwitchConnection {
+public:
+    MockSwitchConnection() : SwitchConnection("mockBridge") {
+    }
+    virtual ~MockSwitchConnection() {
+        clear();
+    }
+
+    void clear() {
+        BOOST_FOREACH(ofpbuf* msg, sentMsgs) {
+            ofpbuf_delete(msg);
+        }
+        sentMsgs.clear();
+    }
+
+    ofp_version GetProtocolVersion() { return OFP13_VERSION; }
+
+    int SendMessage(ofpbuf *msg) {
+        sentMsgs.push_back(msg);
+        return 0;
+    }
+
+    std::vector<ofpbuf*> sentMsgs;
+};
+
 class FlowManagerFixture : public ModbFixture {
 public:
     FlowManagerFixture() : ModbFixture(),
                         flowManager(agent),
-                        policyMgr(agent.getPolicyManager()) {
+                        policyMgr(agent.getPolicyManager()),
+                           ep2_port(11), ep4_port(22) {
+        string tunIf("br0_vxlan0");
         flowManager.SetExecutor(&exec);
         flowManager.SetPortMapper(&portmapper);
+        flowManager.SetEncapIface(tunIf);
+        flowManager.SetTunnelRemoteIp("10.11.12.13");
+
         portmapper.ports[ep0->getInterfaceName().get()] = 80;
+        portmapper.ports[tunIf] = 2048;
 
         WAIT_FOR(policyMgr.groupExists(epg0->getURI()), 500);
         WAIT_FOR(policyMgr.getBDForGroup(epg0->getURI()) != boost::none, 500);
 
         WAIT_FOR(policyMgr.groupExists(epg1->getURI()), 500);
         WAIT_FOR(policyMgr.getRDForGroup(epg1->getURI()) != boost::none, 500);
+
+        WAIT_FOR(policyMgr.groupExists(epg3->getURI()), 500);
+        WAIT_FOR(policyMgr.getRDForGroup(epg3->getURI()) != boost::none, 500);
 
         PolicyManager::uri_set_t egs;
         WAIT_FOR_DO(egs.size() == 2, 1000,
@@ -116,18 +188,26 @@ public:
     MockPortMapper portmapper;
     PolicyManager& policyMgr;
 
+    vector<string> fe_fixed;
     vector<string> fe_epg0, fe_epg0_fd0;
-    vector<string> fe_ep0, fe_ep0_fd0, fe_ep0_eg1;
+    vector<string> fe_ep0, fe_ep0_fd0_1, fe_ep0_fd0_2, fe_ep0_eg1;
     vector<string> fe_ep0_eg0_1, fe_ep0_eg0_2;
     vector<string> fe_ep0_port_1, fe_ep0_port_2, fe_ep0_port_3;
     vector<string> fe_ep2, fe_ep2_eg1;
-    vector<string> fe_con0, fe_con1, fe_con2;
+    vector<string> fe_con1, fe_con2;
+    string ge_fd0, ge_bkt_ep0, ge_bkt_ep2, ge_bkt_tun;
+    string ge_fd0_prom;
+    string ge_fd1, ge_bkt_ep4;
+    string ge_fd1_prom;
+    uint32_t ep2_port;
+    uint32_t ep4_port;
 };
 
 BOOST_AUTO_TEST_SUITE(FlowManager_test)
 
 BOOST_FIXTURE_TEST_CASE(epg, FlowManagerFixture) {
     /* create */
+    exec.Expect(FlowEdit::add, fe_fixed);
     exec.Expect(FlowEdit::add, fe_epg0);
     exec.Expect(FlowEdit::add, fe_ep0);
     exec.Expect(FlowEdit::add, fe_ep2);
@@ -145,9 +225,13 @@ BOOST_FIXTURE_TEST_CASE(epg, FlowManagerFixture) {
     m1.commit();
     WAIT_FOR(policyMgr.getFDForGroup(epg0->getURI()) != boost::none, 500);
     exec.Expect(FlowEdit::mod, fe_epg0_fd0);
-    exec.Expect(FlowEdit::mod, fe_ep0_fd0);
+    exec.Expect(FlowEdit::mod, fe_ep0_fd0_1);
+    exec.Expect(FlowEdit::add, fe_ep0_fd0_2);
+    exec.ExpectGroup(FlowEdit::add, ge_fd0 + ge_bkt_ep0 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::add, ge_fd0_prom + ge_bkt_tun);
     flowManager.egDomainUpdated(epg0->getURI());
     BOOST_CHECK(exec.IsEmpty());
+    BOOST_CHECK(exec.IsGroupEmpty());
 
     /* remove */
     Mutator m2(framework, policyOwner);
@@ -223,11 +307,56 @@ BOOST_FIXTURE_TEST_CASE(remoteEp, FlowManagerFixture) {
     BOOST_CHECK(exec.IsEmpty());
 }
 
-BOOST_FIXTURE_TEST_CASE(policy, FlowManagerFixture) {
-    exec.Expect(FlowEdit::add, fe_con0);
-    flowManager.contractUpdated(con0->getURI());
-    BOOST_CHECK(exec.IsEmpty());
+BOOST_FIXTURE_TEST_CASE(fd, FlowManagerFixture) {
+    exec.IgnoreFlowMods();
+    portmapper.ports[ep2->getInterfaceName().get()] = ep2_port;
+    portmapper.ports[ep4->getInterfaceName().get()] = ep4_port;
+    flowManager.endpointUpdated(ep0->getUUID());
+    flowManager.endpointUpdated(ep2->getUUID());
 
+    Mutator m1(framework, policyOwner);
+    epg0->addGbpEpGroupToNetworkRSrc()
+            ->setTargetSubnets(subnetsfd0->getURI());
+    m1.commit();
+    WAIT_FOR(policyMgr.getFDForGroup(epg0->getURI()) != boost::none, 500);
+    exec.Expect(FlowEdit::mod, fe_ep0_fd0_1);
+    exec.Expect(FlowEdit::add, fe_ep0_fd0_2);
+    exec.ExpectGroup(FlowEdit::add, ge_fd0 + ge_bkt_ep0 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::add, ge_fd0_prom + ge_bkt_tun);
+    flowManager.endpointUpdated(ep0->getUUID());
+    BOOST_CHECK(exec.IsEmpty());
+    BOOST_CHECK(exec.IsGroupEmpty());
+
+    exec.IgnoreFlowMods();
+    exec.ExpectGroup(FlowEdit::mod, ge_fd0 + ge_bkt_ep0 + ge_bkt_ep2
+            + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::mod, ge_fd0_prom + ge_bkt_tun);
+    flowManager.endpointUpdated(ep2->getUUID());
+    BOOST_CHECK(exec.IsGroupEmpty());
+
+    /* remove port-mapping for ep2 */
+    portmapper.ports.erase(ep2->getInterfaceName().get());
+    exec.ExpectGroup(FlowEdit::mod, ge_fd0 + ge_bkt_ep0 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::mod, ge_fd0_prom + ge_bkt_tun);
+    flowManager.endpointUpdated(ep2->getUUID());
+    BOOST_CHECK(exec.IsGroupEmpty());
+
+    /* remove ep0 */
+    epSrc.removeEndpoint(ep0->getUUID());
+    exec.ExpectGroup(FlowEdit::del, ge_fd0);
+    exec.ExpectGroup(FlowEdit::del, ge_fd0_prom);
+    flowManager.endpointUpdated(ep0->getUUID());
+    BOOST_CHECK(exec.IsGroupEmpty());
+
+    /* check promiscous flood */
+    WAIT_FOR(policyMgr.getFDForGroup(epg2->getURI()) != boost::none, 500);
+    exec.ExpectGroup(FlowEdit::add, ge_fd1 + ge_bkt_ep4 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::add, ge_fd1_prom + ge_bkt_ep4 + ge_bkt_tun);
+    flowManager.endpointUpdated(ep4->getUUID());
+    BOOST_CHECK(exec.IsGroupEmpty());
+}
+
+BOOST_FIXTURE_TEST_CASE(policy, FlowManagerFixture) {
     exec.Expect(FlowEdit::add, fe_con2);
     flowManager.contractUpdated(con2->getURI());
     BOOST_CHECK(exec.IsEmpty());
@@ -244,6 +373,130 @@ BOOST_FIXTURE_TEST_CASE(policy, FlowManagerFixture) {
     exec.Expect(FlowEdit::del, fe_con2);
     flowManager.contractUpdated(con2->getURI());
     BOOST_CHECK(exec.IsEmpty());
+}
+
+BOOST_FIXTURE_TEST_CASE(learn, FlowManagerFixture) {
+    MockSwitchConnection conn;
+    char packet_buf[512];
+    ofputil_packet_in pin1, pin2;
+    memset(packet_buf, 0xdeadbeef, sizeof(packet_buf));
+    memset(&pin1, 0, sizeof(pin1));
+    memset(&pin2, 0, sizeof(pin2));
+    ofputil_protocol proto = 
+        ofputil_protocol_from_ofp_version(conn.GetProtocolVersion());
+
+    // initialize just the first part of the ethernet header
+    char mac1[6] = {0xa, 0xb, 0xc, 0xd, 0xe, 0xf};
+    char mac2[6] = {0xf, 0xe, 0xd, 0xc, 0xb, 0xa};
+    memcpy(packet_buf, mac1, sizeof(mac1));
+    memcpy(packet_buf + sizeof(mac1), mac2, sizeof(mac2));
+
+    // stage 1 
+    pin1.reason = OFPR_ACTION;
+    pin1.packet = &packet_buf;
+    pin1.packet_len = sizeof(packet_buf);
+    pin1.total_len = sizeof(packet_buf);
+    pin1.buffer_id = UINT32_MAX;
+    pin1.table_id = 3;
+    pin1.fmd.in_port = 42;
+    pin1.fmd.regs[0] = 5;
+    pin1.fmd.regs[5] = 10;
+    
+    ofpbuf* b = ofputil_encode_packet_in(&pin1,
+                                          OFPUTIL_P_OF10_NXM,
+                                          NXPIF_NXM);
+    flowManager.Handle(&conn, OFPTYPE_PACKET_IN, b);
+    ofpbuf_delete(b);
+
+    BOOST_CHECK(conn.sentMsgs.size() == 3);
+    uint64_t ofpacts_stub1[1024 / 8];
+    uint64_t ofpacts_stub2[1024 / 8];
+    uint64_t ofpacts_stub3[1024 / 8];
+    struct ofpbuf ofpacts1, ofpacts2, ofpacts3;
+    struct ofputil_flow_mod fm1, fm2;
+    struct ofputil_packet_out po;
+
+    ofpbuf_use_stub(&ofpacts1, ofpacts_stub1, sizeof ofpacts_stub1);
+    ofpbuf_use_stub(&ofpacts2, ofpacts_stub2, sizeof ofpacts_stub2);
+    ofpbuf_use_stub(&ofpacts3, ofpacts_stub3, sizeof ofpacts_stub3);
+    ofputil_decode_flow_mod(&fm1, (ofp_header*)ofpbuf_data(conn.sentMsgs[0]),
+                            proto, &ofpacts1, u16_to_ofp(64), 8);
+    ofputil_decode_flow_mod(&fm2, (ofp_header*)ofpbuf_data(conn.sentMsgs[1]),
+                            proto, &ofpacts2, u16_to_ofp(64), 8);
+    ofputil_decode_packet_out(&po, (ofp_header*)ofpbuf_data(conn.sentMsgs[2]),
+                              &ofpacts3);
+
+    BOOST_CHECK(0 == memcmp(fm1.match.flow.dl_dst, mac2, sizeof(mac2)));
+    BOOST_CHECK_EQUAL(10, fm1.match.flow.regs[5]);
+    struct ofpact* a;
+    int i;
+    i = 0;
+    OFPACT_FOR_EACH (a, fm1.ofpacts, fm1.ofpacts_len) {
+        if (i == 0) BOOST_CHECK_EQUAL(OFPACT_SET_FIELD, a->type);
+        if (i == 1) BOOST_CHECK_EQUAL(OFPACT_SET_FIELD, a->type);
+        if (i == 2) BOOST_CHECK_EQUAL(OFPACT_OUTPUT, a->type);
+        if (i == 3) BOOST_CHECK_EQUAL(OFPACT_CONTROLLER, a->type);
+        ++i;
+    }
+    BOOST_CHECK_EQUAL(4, i);
+
+    BOOST_CHECK(0 == memcmp(fm2.match.flow.dl_src, mac2, sizeof(mac2)));
+    BOOST_CHECK_EQUAL(42, ofp_to_u16(fm2.match.flow.in_port.ofp_port));
+    i = 0;
+    OFPACT_FOR_EACH (a, fm2.ofpacts, fm2.ofpacts_len) {
+        if (i == 0) BOOST_CHECK_EQUAL(OFPACT_GROUP, a->type);
+        ++i;
+    }
+    BOOST_CHECK_EQUAL(1, i);
+
+    BOOST_CHECK_EQUAL(sizeof(packet_buf), po.packet_len);
+    BOOST_CHECK(0 == memcmp(po.packet, packet_buf, sizeof(packet_buf)));
+    i = 0;
+    OFPACT_FOR_EACH (a, po.ofpacts, po.ofpacts_len) {
+        if (i == 0) BOOST_CHECK_EQUAL(OFPACT_GROUP, a->type);
+        ++i;
+    }
+    BOOST_CHECK_EQUAL(1, i);
+    
+    conn.clear();
+
+    // stage2
+    pin1.reason = OFPR_ACTION;
+    pin1.packet = &packet_buf;
+    pin1.packet_len = 512;
+    pin1.total_len = 512;
+    pin1.buffer_id = UINT32_MAX;
+    pin1.table_id = 3;
+    pin1.fmd.in_port = 24;
+    pin1.fmd.regs[0] = 5;
+    pin1.fmd.regs[5] = 10;
+    pin1.fmd.regs[7] = 42;
+
+    b = ofputil_encode_packet_in(&pin1,
+                                 OFPUTIL_P_OF10_NXM,
+                                 NXPIF_NXM);
+    flowManager.Handle(&conn, OFPTYPE_PACKET_IN, b);
+    ofpbuf_delete(b);
+
+    BOOST_CHECK(conn.sentMsgs.size() == 2);
+    ofputil_decode_flow_mod(&fm1, (ofp_header *)ofpbuf_data(conn.sentMsgs[0]),
+                            proto, &ofpacts1, u16_to_ofp(64), 8);
+    ofputil_decode_flow_mod(&fm2, (ofp_header *)ofpbuf_data(conn.sentMsgs[1]),
+                            proto, &ofpacts2, u16_to_ofp(64), 8);
+    BOOST_CHECK(0 == memcmp(fm1.match.flow.dl_dst, mac2, sizeof(mac2)));
+    BOOST_CHECK_EQUAL(10, fm1.match.flow.regs[5]);
+
+    BOOST_CHECK(0 == memcmp(fm2.match.flow.dl_dst, mac1, sizeof(mac1)));
+    BOOST_CHECK(0 == memcmp(fm2.match.flow.dl_src, mac2, sizeof(mac2)));
+    BOOST_CHECK_EQUAL(10, fm2.match.flow.regs[5]);
+    i = 0;
+    OFPACT_FOR_EACH (a, fm2.ofpacts, fm2.ofpacts_len) {
+        if (i == 0) BOOST_CHECK_EQUAL(OFPACT_SET_FIELD, a->type);
+        if (i == 1) BOOST_CHECK_EQUAL(OFPACT_SET_FIELD, a->type);
+        if (i == 2) BOOST_CHECK_EQUAL(OFPACT_GOTO_TABLE, a->type);
+        ++i;
+    }
+    BOOST_CHECK_EQUAL(3, i);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -273,6 +526,7 @@ public:
     string done() { cntr = 0; return entry; }
     Bldr& table(uint8_t t) { rep(", table=", str(t)); return *this; }
     Bldr& priority(uint16_t p) { rep(", priority=", str(p)); return *this; }
+    Bldr& cookie(uint64_t c) { rep("cookie=", str(c, hex)); return *this; }
     Bldr& tunId(uint32_t id) { rep(",tun_id=", str(id, true)); return *this; }
     Bldr& in(uint32_t p) { rep(",in_port=", str(p)); return *this; }
     Bldr& reg(REG r, uint32_t v) {
@@ -290,6 +544,7 @@ public:
     Bldr& isIpDst(string& s) { rep(",nw_dst=", s); return *this; }
     Bldr& isTpDst(uint16_t p) { rep(",tp_dst=", str(p)); return *this; }
     Bldr& actions() { rep(" actions="); cntr = 1; return *this; }
+    Bldr& drop() { rep("drop"); return *this; }
     Bldr& load(REG r, uint32_t v) {
         rep("load:", str(v, true), "->" + rstr[r]); return *this;
     }
@@ -301,6 +556,10 @@ public:
     Bldr& go(uint8_t t) { rep("goto_table:", str(t)); return *this; }
     Bldr& out(REG r) { rep("output:" + rstr[r]); return *this; }
     Bldr& decTtl() { rep("dec_ttl"); return *this; }
+    Bldr& group(uint32_t g) { rep("group:", str(g)); return *this; }
+    Bldr& bktId(uint32_t b) { rep("bucket_id:", str(b)); return *this; }
+    Bldr& bktActions() { rep(",actions="); cntr = 1; return *this; }
+    Bldr& outPort(uint32_t p) { rep("output:" + str(p)); return *this; }
 
 private:
     /**
@@ -359,6 +618,14 @@ FlowManagerFixture::createEntriesForObjects() {
     memcpy(rmacArr, flowManager.GetRouterMacAddr(), sizeof(rmacArr));
     string rmac = MAC(rmacArr).toString();
     string bmac("ff:ff:ff:ff:ff:ff");
+    string mmac("01:00:00:00:00:00/01:00:00:00:00:00");
+
+    fe_fixed.push_back(Bldr().table(0).priority(25).arp()
+                       .actions().drop().done());
+    fe_fixed.push_back(Bldr().table(0).priority(25).ip()
+                       .actions().drop().done());
+    fe_fixed.push_back(Bldr().table(0).priority(50)
+                       .in(tunPort).actions().go(1).done());
 
     /* epg0 */
     uint32_t epg0_vnid = policyMgr.getVnidForGroup(epg0->getURI()).get();
@@ -366,14 +633,14 @@ FlowManagerFixture::createEntriesForObjects() {
     fe_epg0.push_back(Bldr().table(1).priority(150).tunId(epg0_vnid)
             .in(tunPort).actions().load(SEPG, epg0_vnid).load(BD, 1)
             .load(FD, 0).load(RD, 1).go(2).done());
-    fe_epg0.push_back(Bldr().table(3).priority(100).reg(SEPG, epg0_vnid)
+    fe_epg0.push_back(Bldr().table(4).priority(100).reg(SEPG, epg0_vnid)
             .reg(DEPG, epg0_vnid).actions().out(OUTPORT).done());
 
     /* epg0 connected to fd0 */
     fe_epg0_fd0.push_back(Bldr(fe_epg0[0]).load(FD, 1).done());
 
     /* local EP ep0 */
-    string ep0_mac = ep0->getMAC().toString();
+    string ep0_mac = ep0->getMAC().get().toString();
     string ep0_ip0 = *(ep0->getIPs().begin());
     string ep0_ip1 = *next(ep0->getIPs().begin());
     uint32_t ep0_port = portmapper.FindPort(ep0->getInterfaceName().get());
@@ -391,22 +658,22 @@ FlowManagerFixture::createEntriesForObjects() {
             .load(FD, 0).load(RD, 1).go(2).done());
     fe_ep0.push_back(Bldr().table(2).priority(10).reg(BD, 1)
             .isEthDst(ep0_mac).actions().load(DEPG, epg0_vnid)
-            .load(OUTPORT, ep0_port).go(3).done());
+            .load(OUTPORT, ep0_port).go(4).done());
     fe_ep0.push_back(Bldr().table(2).priority(15).ip().reg(RD, 1)
             .isEthDst(rmac).isIpDst(ep0_ip0)
             .actions().load(DEPG, epg0_vnid).load(OUTPORT, ep0_port)
-            .ethSrc(rmac).ethDst(ep0_mac).decTtl().go(3).done());
+            .ethSrc(rmac).ethDst(ep0_mac).decTtl().go(4).done());
     fe_ep0.push_back(Bldr().table(2).priority(20).arp().reg(RD, 1)
             .isEthDst(bmac).isTpa(ep0_ip0).isArpOp(1)
             .actions().load(DEPG, epg0_vnid).load(OUTPORT, ep0_port)
-            .ethDst(ep0_mac).go(3).done());
+            .ethDst(ep0_mac).go(4).done());
     fe_ep0.push_back(Bldr(fe_ep0[7]).isIpDst(ep0_ip1).done());
     fe_ep0.push_back(Bldr(fe_ep0[8]).isTpa(ep0_ip1).done());
 
     /* ep0 when eg0 connected to fd0 */
-    fe_ep0_fd0.push_back(Bldr().table(1).priority(140).in(ep0_port)
-            .isEthSrc(ep0_mac).actions().load(SEPG, epg0_vnid).load(BD, 1)
-            .load(FD, 1).load(RD, 1).go(2).done());
+    fe_ep0_fd0_1.push_back(Bldr(fe_ep0[5]).load(FD, 1).done());
+    fe_ep0_fd0_2.push_back(Bldr().table(2).priority(10).reg(FD, 1)
+            .isEthDst(mmac).actions().group(1).done());
 
     /* ep0 when moved to new group epg1 */
     fe_ep0_eg1.push_back(Bldr(fe_ep0[5]).load(SEPG, epg1_vnid)
@@ -434,39 +701,52 @@ FlowManagerFixture::createEntriesForObjects() {
     }
 
     /* Remote EP ep2 */
-    string ep2_mac = ep2->getMAC().toString();
+    string ep2_mac = ep2->getMAC().get().toString();
     string ep2_ip0 = *(ep2->getIPs().begin());
     fe_ep2.push_back(Bldr().table(2).priority(10).reg(BD, 1).isEthDst(ep2_mac)
             .actions().load(DEPG, epg0_vnid).load(OUTPORT, tunPort)
-            .move(SEPG, TUNID).load(TUNDST, tunDst).go(3)
+            .move(SEPG, TUNID).load(TUNDST, tunDst).go(4)
             .done());
     fe_ep2.push_back(Bldr().table(2).priority(15).ip().reg(RD, 1)
             .isEthDst(rmac).isIpDst(ep2_ip0).actions().load(DEPG, epg0_vnid)
             .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, tunDst)
-            .ethSrc(rmac).decTtl().go(3).done());
+            .ethSrc(rmac).decTtl().go(4).done());
     fe_ep2.push_back(Bldr().table(2).priority(20).arp().reg(RD, 1)
             .isEthDst(bmac).isTpa(ep2_ip0).isArpOp(1)
             .actions().load(DEPG, epg0_vnid)
             .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, tunDst)
-            .ethDst(ep2_mac).go(3).done());
+            .ethDst(ep2_mac).go(4).done());
 
     /* ep2 connected to new group epg1 */
     fe_ep2_eg1.push_back(Bldr(fe_ep2[1]).load(DEPG, epg1_vnid).done());
     fe_ep2_eg1.push_back(Bldr(fe_ep2[2]).load(DEPG, epg1_vnid).done());
 
+    /* Group entries */
+    string bktInit = ",bucket=";
+    ge_fd0 = "group_id=1,type=all";
+    ge_bkt_ep0 = Bldr(bktInit).bktId(ep0_port).bktActions().outPort(ep0_port)
+            .done();
+    ge_bkt_ep2 = Bldr(bktInit).bktId(ep2_port).bktActions().outPort(ep2_port)
+            .done();
+    ge_bkt_tun = Bldr(bktInit).bktId(tunPort).bktActions().move(SEPG, TUNID)
+            .load(TUNDST, tunDst).outPort(tunPort).done();
+    ge_fd0_prom = "group_id=2147483649,type=all";
+
+    ge_bkt_ep4 = Bldr(bktInit).bktId(ep4_port).bktActions().outPort(ep4_port)
+            .done();
+    ge_fd1 = "group_id=2,type=all";
+    ge_fd1_prom = "group_id=2147483650,type=all";
+
     uint32_t epg2_vnid = policyMgr.getVnidForGroup(epg2->getURI()).get();
     uint32_t epg3_vnid = policyMgr.getVnidForGroup(epg3->getURI()).get();
     uint16_t prio = FlowManager::MAX_POLICY_RULE_PRIORITY;
 
-    /* con0 */
-    fe_con0.push_back(Bldr().table(3).priority(prio).reg(SEPG, epg1_vnid)
-            .reg(DEPG, epg0_vnid).actions().out(OUTPORT).done());
-    fe_con0.push_back(Bldr(fe_con0[0]).reg(SEPG, epg0_vnid)
-            .reg(DEPG, epg1_vnid).done());
-
     /* con2 */
-    fe_con2.push_back(Bldr().table(3).priority(prio).reg(SEPG, epg3_vnid)
-            .reg(DEPG, epg2_vnid).actions().out(OUTPORT).done());
+    uint32_t con2_cookie = flowManager.GetId(con2->getClassId(),
+            con2->getURI());
+    fe_con2.push_back(Bldr().table(4).priority(prio).cookie(con2_cookie)
+            .reg(SEPG, epg3_vnid).reg(DEPG, epg2_vnid).actions().out(OUTPORT)
+            .done());
     fe_con2.push_back(Bldr(fe_con2[0]).reg(SEPG, epg2_vnid)
             .reg(DEPG, epg3_vnid).done());
 
@@ -477,15 +757,37 @@ FlowManagerFixture::createEntriesForObjects() {
     unordered_set<uint32_t> pvnids, cvnids;
     flowManager.GetGroupVnids(ps, pvnids);
     flowManager.GetGroupVnids(cs, cvnids);
+    uint32_t con1_cookie = flowManager.GetId(con1->getClassId(),
+            con1->getURI());
     BOOST_FOREACH(uint32_t pvnid, pvnids) {
         BOOST_FOREACH(uint32_t cvnid, cvnids) {
-            fe_con1.push_back(Bldr().table(3).priority(prio).tcp()
+            fe_con1.push_back(Bldr().table(4).priority(prio)
+                    .cookie(con1_cookie).tcp()
                     .reg(SEPG, cvnid).reg(DEPG, pvnid).isTpDst(80)
                     .actions().out(OUTPORT).done());
-            fe_con1.push_back(Bldr().table(3).priority(prio-1).arp()
+            fe_con1.push_back(Bldr().table(4).priority(prio-1)
+                    .cookie(con1_cookie).arp()
                     .reg(SEPG, pvnid).reg(DEPG, cvnid)
                     .actions().out(OUTPORT).done());
         }
     }
 }
 
+string CanonicalizeGroupEntryStr(const string& entryStr) {
+    size_t p = 0;
+    vector<string> tokens;
+    while (p != string::npos) {
+        size_t np = entryStr.find(",bucket=", p > 0 ? p+1 : p);
+        size_t len = np == string::npos ? string::npos : (np-p);
+        tokens.push_back(entryStr.substr(p, len));
+        p = np;
+    }
+    if (tokens.size() > 1) {
+        sort(tokens.begin()+1, tokens.end());
+    }
+    string out;
+    BOOST_FOREACH(const string& s, tokens) {
+        out.append(s);
+    }
+    return out;
+}

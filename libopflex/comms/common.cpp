@@ -6,14 +6,13 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <uv.h>
-#include <cstdlib>
+#include <yajr/rpc/rpc.hpp>
 #include <yajr/internal/comms.hpp>
+
 #include <opflex/logging/internal/logging.hpp>
 #include <boost/scoped_ptr.hpp>
-#include <yajr/rpc/rpc.hpp>
 
-#include <cstdio>
+#include <uv.h>
 
 int ::yajr::initLoop(uv_loop_t * loop) {
 
@@ -55,7 +54,7 @@ void internal::Peer::LoopData::onPrepareLoop() {
     }
 
     if (peers[RETRY_TO_CONNECT].begin() !=
-        peers[RETRY_TO_CONNECT].begin()) {
+        peers[RETRY_TO_CONNECT].end()) {
 
         LOG(INFO) << "retrying first RETRY_TO_CONNECT peer";
 

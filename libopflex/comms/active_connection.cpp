@@ -6,8 +6,8 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <yajr/internal/comms.hpp>
 #include <opflex/logging/internal/logging.hpp>
+#include <yajr/internal/comms.hpp>
 
 /*
                              _        _   _
@@ -147,6 +147,13 @@ void on_active_connection(uv_connect_t *req, int status) {
             "] " << uv_strerror(status);
         if ((rc = connect_to_next_address(peer))) {
             LOG(WARNING) << "connect: no more resolved addresses";
+
+            /* since all attempts for all possible IP addresses have failed,
+             * issue an error callback
+             */
+            peer->onError(rc);
+
+            /* retry later */
             retry_later(peer);
         }
         return;

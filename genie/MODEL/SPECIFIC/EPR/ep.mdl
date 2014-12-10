@@ -6,25 +6,23 @@ module[epr]
     type[name=GroupContext; super=epr/Context]
 
     # Superclass for all end points declared in the epr universes.
-    # End point is a networking device attaching to the network
-    # as part of group
+    # End point is an entity to which we can apply policy
     class[EndPoint;
           abstract;
           ]
     {
-        # context in which end-point has been detected (like port)
-        member[uuid; type=reference/UUID]
 
-        # mac address of the end-point
-        member[mac; type=address/MAC]
     }
 
-    # abstraction of local end-point identifies an end-point that is locally discovered.
+    # abstraction of local end-point identifies an end-point that is
+    # locally discovered and not reported to the endpoint registry
     class[LocalEp;
           super=epr/EndPoint;
           abstract
           ]
+    {
 
+    }
 
     # abstraction of externally reportable ep
     class[ReportedEp;
@@ -32,12 +30,43 @@ module[epr]
           abstract
           ]
     {
+
+    }
+
+    # an endpoint with network identifiers
+    class[LocalNetworkEp;
+          super=epr/LocalEp;
+          abstract;
+          ]
+    {
+        # A unique identifer for the endpoint.  Could be related to a
+        # UUID for an interface, virtual machine, etc.
+        member[uuid; type=reference/UUID]
+
+        # mac address of the end-point
+        member[mac; type=address/MAC]
+    }
+
+    # an endpoint with network identifiers
+    class[ReportedNetworkEp;
+          super=epr/ReportedEp;
+          abstract;
+          ]
+    {
+        # A unique identifer for the endpoint.  Could be related to a
+        # UUID for an interface, virtual machine, etc.
+        member[uuid; type=reference/UUID]
+
+        # mac address of the end-point
+        member[mac; type=address/MAC]
+
+        # endpoint group for the endpoint
         member[group; type=epr/GroupContext]
     }
 
     # L2 end-point that is part of the L2 universe
     class[L2Ep;
-          super=epr/ReportedEp;
+          super=epr/ReportedNetworkEp;
           concrete
           ]
     {
@@ -59,8 +88,12 @@ module[epr]
     }
 
     # ip address that belongs to a L2Ep (a mac address).
-    # a mac address can have many ip addresses associated with it (interface multi-netting)
-    class[L3Net; concrete]
+    # a mac address can have many ip addresses associated with it
+    # (interface multi-netting)
+    class[L3Net;
+          super=epr/ReportedEp;
+          concrete
+          ]
     {
         member[ip; type=address/IP]
         contained
@@ -78,7 +111,7 @@ module[epr]
 
     # L3 end-point that is part of the L3 universe
     class[L3Ep;
-          super=epr/ReportedEp;
+          super=epr/ReportedNetworkEp;
           concrete
           ]
     {

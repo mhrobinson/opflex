@@ -10,15 +10,19 @@
 #ifndef _INCLUDE__OPFLEX__COMMS_INTERNAL_HPP
 #define _INCLUDE__OPFLEX__COMMS_INTERNAL_HPP
 
-#include <cstdlib>  /* for malloc() and free() */
-#include <sstream>  /* for basic_stringstream<> */
-#include <yajr/yajr.hpp>
-#include <rapidjson/document.h>
-#include <yajr/rpc/rpc.hpp>
-#include <yajr/rpc/message_factory.hpp>
 #include <yajr/rpc/send_handler.hpp>
+#include <yajr/rpc/message_factory.hpp>
+#include <yajr/yajr.hpp>
+#include <yajr/rpc/rpc.hpp>
+
+#include <rapidjson/document.h>
 #include <iovec-utils.hh>
+#include <uv.h>
+
 #include <boost/intrusive/list.hpp>
+
+#include <sstream>  /* for basic_stringstream<> */
+#include <iostream>
 
 #ifndef NDEBUG
 #  include <boost/version.hpp>
@@ -27,8 +31,6 @@
 #    include <boost/atomic.hpp>
 #  endif
 #endif
-
-#include <iostream>
 
 namespace yajr { namespace comms { namespace internal {
 
@@ -520,6 +522,16 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
         }
     }
 
+    virtual void disconnect() {
+        if (connected_) {
+            onDisconnect();
+        }
+    }
+
+    virtual int getPeerName(struct sockaddr* remoteAddress, int* len) const {
+        return uv_tcp_getpeername(&handle_, remoteAddress, len);
+    }
+
     virtual void destroy() {
         LOG(DEBUG) << this;
 
@@ -582,7 +594,10 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
             std::vector<iovec> const & iov
     );
 
+#ifdef    NEED_DESPERATE_CPU_BOGGING_AND_THREAD_UNSAFE_DEBUGGING
+// Not thread-safe. Build only as needed for ad-hoc debugging builds.
     void logDeque() const;
+#endif // NEED_DESPERATE_CPU_BOGGING_AND_THREAD_UNSAFE_DEBUGGING
 
   protected:
     /* don't leak memory! */

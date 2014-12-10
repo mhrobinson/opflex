@@ -47,6 +47,27 @@ FlowExecutor::UninstallListenersForConnection(SwitchConnection *conn) {
 
 bool
 FlowExecutor::Execute(const FlowEdit& fe) {
+    return ExecuteInt<FlowEdit>(fe);
+}
+
+bool
+FlowExecutor::ExecuteNoBlock(const FlowEdit& fe) {
+    return ExecuteIntNoBlock<FlowEdit>(fe);
+}
+
+bool
+FlowExecutor::Execute(const GroupEdit& ge) {
+    return ExecuteInt<GroupEdit>(ge);
+}
+
+bool
+FlowExecutor::ExecuteNoBlock(const GroupEdit& ge) {
+    return ExecuteIntNoBlock<GroupEdit>(ge);
+}
+
+template<typename T>
+bool
+FlowExecutor::ExecuteInt(const T& fe) {
     if (fe.edits.empty()) {
         return true;
     }
@@ -61,26 +82,35 @@ FlowExecutor::Execute(const FlowEdit& fe) {
         RequestState& barrReqState = requests[barrXid];
     }
 
-    int error = DoExecuteNoBlock(fe, barrXid);
+    int error = DoExecuteNoBlock<T>(fe, barrXid);
     if (error == 0) {
         error = WaitOnBarrier(barrReq);
     } else {
         mutex_guard lock(reqMtx);
         requests.erase(barrXid);
     }
-    return error != 0;
+    return error == 0;
 }
 
+template<typename T>
 bool
-FlowExecutor::ExecuteNoBlock(const FlowEdit& fe) {
+FlowExecutor::ExecuteIntNoBlock(const T& fe) {
     if (fe.edits.empty()) {
         return true;
     }
-    return DoExecuteNoBlock(fe, boost::none) != 0;
+    return DoExecuteNoBlock<T>(fe, boost::none) == 0;
 }
 
+template<>
 ofpbuf *
-FlowExecutor::EncodeFlowMod(const FlowEdit::Entry& edit,
+FlowExecutor::EncodeMod<GroupEdit::Entry>(const GroupEdit::Entry& edit,
+        ofp_version ofVersion) {
+    return ofputil_encode_group_mod(ofVersion, edit->mod);
+}
+
+template<>
+ofpbuf *
+FlowExecutor::EncodeMod<FlowEdit::Entry>(const FlowEdit::Entry& edit,
         ofp_version ofVersion) {
     ofputil_protocol proto = ofputil_protocol_from_ofp_version(ofVersion);
     assert(ofputil_protocol_is_valid(proto));
@@ -102,7 +132,7 @@ FlowExecutor::EncodeFlowMod(const FlowEdit::Entry& edit,
     flowMod.ofpacts_len = flow.ofpacts_len;
     flowMod.ofpacts = (ofpact*)flow.ofpacts;
     flowMod.command = mod == FlowEdit::add ? OFPFC_ADD :
-            (mod == FlowEdit::mod ? OFPFC_MODIFY : OFPFC_DELETE);
+            (mod == FlowEdit::mod ? OFPFC_MODIFY_STRICT : OFPFC_DELETE_STRICT);
     /* fill out defaults */
     flowMod.modify_cookie = false;
     flowMod.idle_timeout = OFP_FLOW_PERMANENT;
@@ -116,19 +146,32 @@ FlowExecutor::EncodeFlowMod(const FlowEdit::Entry& edit,
     return ofputil_encode_flow_mod(&flowMod, proto);
 }
 
+ofpbuf *
+FlowExecutor::EncodeFlowMod(const FlowEdit::Entry& edit,
+        ofp_version ofVersion) {
+    return EncodeMod<FlowEdit::Entry>(edit, ofVersion);
+}
+
+ofpbuf *
+FlowExecutor::EncodeGroupMod(const GroupEdit::Entry& edit,
+        ofp_version ofVersion) {
+    return EncodeMod<GroupEdit::Entry>(edit, ofVersion);
+}
+
+template<typename T>
 int
-FlowExecutor::DoExecuteNoBlock(const flow::FlowEdit& fe,
+FlowExecutor::DoExecuteNoBlock(const T& fe,
         const boost::optional<ovs_be32>& barrXid) {
     ofp_version ofVersion = swConn->GetProtocolVersion();
 
-    BOOST_FOREACH (const FlowEdit::Entry& e, fe.edits) {
-        ofpbuf *msg = EncodeFlowMod(e, ofVersion);
+    BOOST_FOREACH (const typename T::Entry& e, fe.edits) {
+        ofpbuf *msg = EncodeMod<typename T::Entry>(e, ofVersion);
         ovs_be32 xid = ((ofp_header *)ofpbuf_data(msg))->xid;
         if (barrXid) {
             mutex_guard lock(reqMtx);
             requests[barrXid.get()].reqXids.insert(xid);
         }
-        LOG(DEBUG) << "Executing xid=" << xid << ", " << *(e.second);
+        LOG(DEBUG) << "Executing xid=" << xid << ", " << e;
         int error = swConn->SendMessage(msg);
         if (error) {
             LOG(ERROR) << "Error sending flow mod message: "
@@ -142,6 +185,7 @@ FlowExecutor::DoExecuteNoBlock(const flow::FlowEdit& fe,
 int
 FlowExecutor::WaitOnBarrier(ofpbuf *barrReq) {
     ovs_be32 barrXid = ((ofp_header *)ofpbuf_data(barrReq))->xid;
+    LOG(DEBUG) << "Sending barrier request xid=" << barrXid;
     int err = swConn->SendMessage(barrReq);
     if (err) {
         LOG(ERROR) << "Error sending barrier request: "
@@ -175,9 +219,6 @@ FlowExecutor::Handle(SwitchConnection *conn, ofptype msgType, ofpbuf *msg) {
             RequestState& req = kv.second;
             if (req.reqXids.find(recvXid) != req.reqXids.end()) {
                 ofperr err = ofperr_decode_msg(msgHdr, NULL);
-                LOG(INFO) << "Request " << recvXid << " failed: "
-                        << ofperr_get_name(err) << " - "
-                        << ofperr_get_description(err);
                 req.status = err;
                 break;
             }

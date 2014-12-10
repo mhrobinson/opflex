@@ -6,10 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <opflex/logging/internal/logging.hpp>
 #include <stdlib.h>
-#include <execinfo.h>
+
+#include <opflex/logging/internal/logging.hpp>
+
 #include <cxxabi.h>
+#include <execinfo.h>
 
 extern "C" void __cyg_profile_func_enter(void *this_fn, void *call_site)
                                         __attribute__((no_instrument_function));
