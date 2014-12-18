@@ -14,6 +14,8 @@
 
 #include <uv.h>
 
+namespace { void prepareAgainCB(uv_timer_t *) { LOG(DEBUG); } }
+
 int ::yajr::initLoop(uv_loop_t * loop) {
 
     if (!(loop->data = new (std::nothrow)
@@ -41,6 +43,27 @@ using namespace yajr::comms::internal;
 
 void internal::Peer::LoopData::onPrepareLoop() {
 
+    if (destroying_ && !refCount_) {
+
+        CountHandle countHandle = { this, 0 };
+
+        uv_walk(prepare_.loop, walkAndCountHandlesCb, &countHandle);
+
+        if (countHandle.counter) {
+            LOG(INFO) << "Still waiting on " << countHandle.counter << " handles";
+
+            return;
+        }
+
+        LOG(INFO) << this << " Stopping and closing loop watcher";
+        uv_prepare_stop(&prepare_);
+        uv_close((uv_handle_t*)&prepare_, &fini);
+
+        assert(prepare_.data == this);
+
+        return;
+    }
+
     uint64_t now = uv_now(prepare_.loop);
 
     peers[TO_RESOLVE]
@@ -50,7 +73,7 @@ void internal::Peer::LoopData::onPrepareLoop() {
         .clear_and_dispose(RetryPeer());
 
     if (now - lastRun_ < 750) {
-        return;
+        goto prepared;
     }
 
     if (peers[RETRY_TO_CONNECT].begin() !=
@@ -62,6 +85,13 @@ void internal::Peer::LoopData::onPrepareLoop() {
         peers[RETRY_TO_CONNECT]
             .erase_and_dispose(peers[RETRY_TO_CONNECT].begin(), RetryPeer());
 
+        LOG(DEBUG)
+            << " Stopping prepareAgain_ @"
+            << reinterpret_cast<void *>(&prepareAgain_)
+        ;
+
+        uv_timer_stop(&prepareAgain_);
+        /* if there are more, we will uv_timer_start() down below */
     }
 
     if (now - lastRun_ > 15000) {
@@ -75,6 +105,21 @@ void internal::Peer::LoopData::onPrepareLoop() {
 
     lastRun_ = now;
 
+prepared:
+    uv_walk(prepare_.loop, walkAndDumpHandlesCb<DEBUG>, this);
+
+    if (peers[RETRY_TO_CONNECT].begin() !=
+        peers[RETRY_TO_CONNECT].end()) {
+        /* We need to make sure we unblock */
+
+        if (!uv_is_active((uv_handle_t *)&prepareAgain_)) {
+            LOG(DEBUG)
+                << " Starting prepareAgain_ @"
+                << reinterpret_cast<void *>(&prepareAgain_)
+            ;
+        } // else we are just pushing it out in time :)
+        uv_timer_start(&prepareAgain_, prepareAgainCB, 1250, 0);
+    }
 }
 
 void internal::Peer::LoopData::onPrepareLoop(uv_prepare_t * h) {
@@ -87,18 +132,16 @@ void internal::Peer::LoopData::onPrepareLoop(uv_prepare_t * h) {
 void internal::Peer::LoopData::fini(uv_handle_t * h) {
     LOG(INFO);
 
-    static_cast< ::yajr::comms::internal::Peer::LoopData *>(h->data)->down();
+    delete static_cast< ::yajr::comms::internal::Peer::LoopData *>(h->data);
 }
 
 void internal::Peer::LoopData::destroy() {
     LOG(INFO);
 
-    uv_prepare_stop(&prepare_);
-    uv_close((uv_handle_t*)&prepare_, &fini);
-
     assert(prepare_.data == this);
 
     destroying_ = 1;
+    down();
 
     for (size_t i=0; i < Peer::LoopData::TOTAL_STATES; ++i) {
         peers[Peer::LoopData::PeerState(i)]

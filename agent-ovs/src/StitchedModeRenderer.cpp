@@ -16,11 +16,13 @@ namespace ovsagent {
 
 using opflex::ofcore::OFFramework;
 using boost::property_tree::ptree;
+using opflex::enforcer::FlowManager;
 
 StitchedModeRenderer::StitchedModeRenderer(Agent& agent_)
     : Renderer(agent_), flowManager(agent_), connection(NULL),
       statsManager(&agent_, portMapper), tunnelEpManager(&agent_),
-      started(false), virtualRouter(true) {
+      virtualRouter(true), started(false) {
+    flowManager.SetFlowReader(&flowReader);
     flowManager.SetExecutor(&flowExecutor);
     flowManager.SetPortMapper(&portMapper);
 }
@@ -41,22 +43,29 @@ void StitchedModeRenderer::start() {
     started = true;
     LOG(INFO) << "Starting stitched-mode renderer on " << ovsBridgeName;
 
-    if (encapType == opflex::enforcer::FlowManager::VXLAN) {
+    if (encapType == FlowManager::ENCAP_VXLAN ||
+        encapType == FlowManager::ENCAP_IVXLAN) {
         tunnelEpManager.setUplinkIface(uplinkIface);
         tunnelEpManager.start();
     }
 
+    flowManager.SetFallbackMode(FlowManager::FALLBACK_PROXY);
+    flowManager.SetEncapType(encapType);
+    flowManager.SetEncapIface(encapIface);
+    if (encapType == FlowManager::ENCAP_VXLAN ||
+        encapType == FlowManager::ENCAP_IVXLAN)
+        flowManager.SetTunnelRemoteIp(tunnelRemoteIp);
+    flowManager.SetVirtualRouter(virtualRouter);
+    flowManager.SetVirtualRouterMac(virtualRouterMac);
+
     connection = new opflex::enforcer::SwitchConnection(ovsBridgeName);
     portMapper.InstallListenersForConnection(connection);
     flowExecutor.InstallListenersForConnection(connection);
+    flowReader.installListenersForConnection(connection);
+    flowManager.registerConnection(connection);
+    flowManager.registerModbListeners();
     connection->Connect(OFP13_VERSION);
 
-    flowManager.SetEncapType(encapType);
-    flowManager.SetEncapIface(encapIface);
-    flowManager.SetTunnelRemoteIp(tunnelRemoteIp);
-    flowManager.SetVirtualRouter(virtualRouter);
-    flowManager.SetVirtualRouterMac(virtualRouterMac);
-    flowManager.registerConnection(connection);
     flowManager.Start();
 
     statsManager.registerConnection(connection);
@@ -73,12 +82,16 @@ void StitchedModeRenderer::stop() {
 
     flowManager.Stop();
     connection->Disconnect();
+    flowManager.unregisterModbListeners();
+    flowManager.unregisterConnection(connection);
+    flowReader.uninstallListenersForConnection(connection);
     flowExecutor.UninstallListenersForConnection(connection);
     portMapper.UninstallListenersForConnection(connection);
     delete connection;
     connection = NULL;
 
-    if (encapType == opflex::enforcer::FlowManager::VXLAN) {
+    if (encapType == FlowManager::ENCAP_VXLAN ||
+        encapType == FlowManager::ENCAP_IVXLAN) {
         tunnelEpManager.stop();
     }
 }
@@ -110,19 +123,19 @@ void StitchedModeRenderer::setProperties(const ptree& properties) {
     boost::optional<const ptree&> vlan =
         properties.get_child_optional(ENCAP_VLAN);
 
-    encapType = opflex::enforcer::FlowManager::NONE;
+    encapType = FlowManager::ENCAP_NONE;
     int count = 0;
     if (ivxlan) {
         LOG(ERROR) << "Encapsulation type ivxlan unsupported";
         count += 1;
     }
     if (vlan) {
-        encapType = opflex::enforcer::FlowManager::VLAN;
+        encapType = FlowManager::ENCAP_VLAN;
         encapIface = vlan.get().get<std::string>(ENCAP_IFACE, "");
         count += 1;
     }
     if (vxlan) {
-        encapType = opflex::enforcer::FlowManager::VXLAN;
+        encapType = FlowManager::ENCAP_VXLAN;
         encapIface = vxlan.get().get<std::string>(ENCAP_IFACE, "");
         uplinkIface = vxlan.get().get<std::string>(UPLINK_IFACE, "");
         tunnelRemoteIp = vxlan.get().get<std::string>(REMOTE_IP, "");

@@ -41,6 +41,7 @@ FlowExecutor::InstallListenersForConnection(SwitchConnection *conn) {
 
 void
 FlowExecutor::UninstallListenersForConnection(SwitchConnection *conn) {
+    conn->UnregisterOnConnectListener(this);
     conn->UnregisterMessageHandler(OFPTYPE_ERROR, this);
     conn->UnregisterMessageHandler(OFPTYPE_BARRIER_REPLY, this);
 }
@@ -79,7 +80,7 @@ FlowExecutor::ExecuteInt(const T& fe) {
 
     {
         mutex_guard lock(reqMtx);
-        RequestState& barrReqState = requests[barrXid];
+        requests[barrXid];
     }
 
     int error = DoExecuteNoBlock<T>(fe, barrXid);
@@ -226,11 +227,16 @@ FlowExecutor::Handle(SwitchConnection *conn, ofptype msgType, ofpbuf *msg) {
         break;
 
     case OFPTYPE_BARRIER_REPLY:
-        RequestMap::iterator itr = requests.find(recvXid);
-        if (itr != requests.end()) {    // request complete
-            itr->second.done = true;
-            reqCondVar.notify_all();
+        {
+            RequestMap::iterator itr = requests.find(recvXid);
+            if (itr != requests.end()) {    // request complete
+                itr->second.done = true;
+                reqCondVar.notify_all();
+            }
         }
+        break;
+    default:
+        LOG(ERROR) << "Unexpected message of type " << msgType;
         break;
     }
 }

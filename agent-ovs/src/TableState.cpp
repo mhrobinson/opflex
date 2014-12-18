@@ -17,6 +17,7 @@ namespace enforcer {
 namespace flow {
 
 using namespace std;
+using namespace boost;
 using namespace ovsagent;
 
 /** FlowEntry **/
@@ -60,7 +61,7 @@ ostream & operator<<(ostream& os, const FlowEntry& fe) {
 }
 
 ostream& operator<<(ostream& os, const FlowEntryList& el) {
-    for (int i = 0; i < el.size(); ++i) {
+    for (size_t i = 0; i < el.size(); ++i) {
         os << endl << *(el[i]);
     }
     return os;
@@ -76,6 +77,7 @@ ostream& operator<<(ostream& os, const FlowEdit& fe) {
     BOOST_FOREACH(const FlowEdit::Entry& e, fe.edits) {
         os << endl << e;
     }
+    return os;
 }
 
 /** GroupEdit **/
@@ -95,6 +97,46 @@ GroupEdit::GroupMod::~GroupMod() {
         delete mod;
     }
     mod = NULL;
+}
+
+bool GroupEdit::GroupEq(const GroupEdit::Entry& lhs,
+                        const GroupEdit::Entry& rhs) {
+    if (lhs == rhs) {
+        return true;
+    }
+    if (lhs == NULL || rhs == NULL) {
+        return false;
+    }
+    ofputil_group_mod& lgm = *(lhs->mod);
+    ofputil_group_mod& rgm = *(rhs->mod);
+    if (lgm.group_id == rgm.group_id &&
+        lgm.type == rgm.type) {
+        bool lempty = list_is_empty(&lgm.buckets);
+        bool rempty = list_is_empty(&rgm.buckets);
+        if (lempty && rempty) {
+            return true;
+        }
+        if (lempty || rempty) {
+            return false;
+        }
+        ofputil_bucket *lhead = (ofputil_bucket *)&lgm.buckets;
+        ofputil_bucket *rhead = (ofputil_bucket *)&rgm.buckets;
+        ofputil_bucket *lbkt = ofputil_bucket_list_front(&lgm.buckets);
+        ofputil_bucket *rbkt = ofputil_bucket_list_front(&rgm.buckets);
+        while (lbkt != lhead && rbkt != rhead) {
+            /* Buckets IDs are not compared because they are assigned by the
+             * switch prior to OpenFlow 1.5
+             */
+            if (!ofpacts_equal(lbkt->ofpacts, lbkt->ofpacts_len,
+                               rbkt->ofpacts, rbkt->ofpacts_len)) {
+                return false;
+            }
+            lbkt = ofputil_bucket_list_front(&lbkt->list_node);
+            rbkt = ofputil_bucket_list_front(&rbkt->list_node);
+        }
+        return (lbkt == lhead && rbkt == rhead);
+    }
+    return false;
 }
 
 ostream & operator<<(ostream& os, const GroupEdit::Entry& ge) {
@@ -124,25 +166,22 @@ ostream & operator<<(ostream& os, const GroupEdit::Entry& ge) {
 
 /** TableState **/
 
-void TableState::DiffEntry(const string& objId,
-        const FlowEntryList& newEntries,
-        FlowEdit& diffs) {
-    EntryMap::iterator itr = entryMap.find(objId);
-    const FlowEntryList& oldEntries =
-            (itr != entryMap.end() ? itr->second : FlowEntryList());
+void TableState::CalculateAddMod(const FlowEntryList& oldEntries,
+                                 const FlowEntryList& newEntries,
+                                 std::vector<bool>& visited,
+                                 FlowEdit& diffs) {
+    assert(oldEntries.size() == visited.size());
 
-    vector<bool> keep(oldEntries.size(), false);
-    for(int j = 0; j < newEntries.size(); ++j) {
-
-        FlowEntry *newFe = newEntries[j];
+    for(size_t j = 0; j < newEntries.size(); ++j) {
+        const FlowEntryPtr& newFe = newEntries[j];
         bool found = false;
 
-        for (int i = 0; i < keep.size(); ++i) {
-            FlowEntry *currFe = oldEntries[i];
-            if (currFe->MatchEq(newFe)) {
-                keep[i] = true;
+        for (size_t i = 0; i < visited.size(); ++i) {
+            const FlowEntryPtr& currFe = oldEntries[i];
+            if (currFe->MatchEq(newFe.get())) {
+                visited[i] = true;
                 found = true;
-                if (!currFe->ActionEq(newFe)) {
+                if (!currFe->ActionEq(newFe.get())) {
                     diffs.edits.push_back(
                             FlowEdit::Entry(FlowEdit::mod, newFe));
                 }
@@ -153,13 +192,43 @@ void TableState::DiffEntry(const string& objId,
             diffs.edits.push_back(FlowEdit::Entry(FlowEdit::add, newFe));
         }
     }
-    for (int i = 0; i < keep.size(); ++i) {
-        if (keep[i] == false) {
+}
+
+void TableState::CalculateDel(const FlowEntryList& oldEntries,
+                              std::vector<bool>& visited,
+                              FlowEdit& diffs) {
+    assert(oldEntries.size() == visited.size());
+    for (size_t i = 0; i < visited.size(); ++i) {
+        if (visited[i] == false) {
             diffs.edits.push_back(
                     FlowEdit::Entry(FlowEdit::del, oldEntries[i]));
         }
     }
+}
+
+void TableState::DiffEntry(const string& objId,
+        const FlowEntryList& newEntries,
+        FlowEdit& diffs) const {
+    EntryMap::const_iterator itr = entryMap.find(objId);
+    const FlowEntryList& oldEntries =
+            (itr != entryMap.end() ? itr->second : FlowEntryList());
+
+    vector<bool> keep(oldEntries.size(), false);
+    CalculateAddMod(oldEntries, newEntries, keep, diffs);
+    CalculateDel(oldEntries, keep, diffs);
     LOG(DEBUG) << diffs.edits.size() << " diff(s), objId=" << objId << diffs;
+}
+
+void TableState::DiffSnapshot(const FlowEntryList& oldEntries,
+                              FlowEdit& diffs) const {
+    vector<bool> keep(oldEntries.size(), false);
+
+    BOOST_FOREACH(const EntryMap::value_type& kv, entryMap) {
+        const FlowEntryList& newEntries = kv.second;
+        CalculateAddMod(oldEntries, newEntries, keep, diffs);
+    }
+    CalculateDel(oldEntries, keep, diffs);
+    LOG(DEBUG) << "Snapshot has " << diffs.edits.size() << " diff(s)" << diffs;
 }
 
 void

@@ -1,6 +1,6 @@
 /* -*- C++ -*-; c-basic-offset: 4; indent-tabs-mode: nil */
 /*
- * Implementation for BoostLogHandler class.
+ * Implementation for AgentLogHandler class.
  *
  * Copyright (c) 2014 Cisco Systems, Inc. and others.  All rights reserved.
  *
@@ -11,30 +11,33 @@
 
 #include <iostream>
 
-#include <boost/log/trivial.hpp>
-
-#include "BoostLogHandler.h"
+#include "AgentLogHandler.h"
 #include "logging.h"
 
 namespace ovsagent {
 
 using opflex::logging::OFLogHandler;
+
+#ifdef USE_BOOST_LOG
 using boost::log::trivial::severity_level;
+#endif
 
-BoostLogHandler::BoostLogHandler(Level logLevel): OFLogHandler(logLevel) { }
-BoostLogHandler::~BoostLogHandler() { }
+AgentLogHandler::AgentLogHandler(Level logLevel): OFLogHandler(logLevel) { }
+AgentLogHandler::~AgentLogHandler() { }
 
-void BoostLogHandler::setLevel(Level logLevel) {
+void AgentLogHandler::setLevel(Level logLevel) {
     logLevel_ = logLevel;
 }
 
-void BoostLogHandler::handleMessage(const std::string& file,
+void AgentLogHandler::handleMessage(const std::string& file,
                                    const int line,
                                    const std::string& function,
                                    const Level level,
                                    const std::string& message) {
+#ifdef USE_BOOST_LOG
     severity_level blevel;
     switch (level) {
+    case OFLogHandler::TRACE:
     case OFLogHandler::DEBUG:
         blevel = ovsagent::DEBUG;
         break;
@@ -56,6 +59,33 @@ void BoostLogHandler::handleMessage(const std::string& file,
     BOOST_LOG_STREAM_WITH_PARAMS(::boost::log::trivial::logger::get(),  \
                                  (::boost::log::keywords::severity = blevel)) \
         << "[" << file << ":" << line << ":" << function << "] " << message;
+#else
+    int slevel;
+    switch (level) {
+    case OFLogHandler::TRACE:
+    case OFLogHandler::DEBUG:
+        slevel = LOG_DEBUG;
+        break;
+    case OFLogHandler::INFO:
+        slevel = LOG_INFO;
+        break;
+    case OFLogHandler::WARNING:
+        slevel = LOG_WARNING;
+        break;
+    case OFLogHandler::ERROR:
+        slevel = LOG_ERR;
+        break;
+    default:
+    case OFLogHandler::FATAL:
+        slevel = LOG_CRIT;
+        break;
+    }
+
+    std::cout << "<" << slevel << "> "
+              << "[" << file << ":" << line << ":" << function << "] "
+              << message << std::endl;
+
+#endif
 }
 
 } /* namespace ovsagent */
