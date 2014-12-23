@@ -426,6 +426,9 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
 
     int write() const;
 
+    int   choke();
+    int unchoke();
+
     void * getData() const {
         return data_;
     }
@@ -554,6 +557,10 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
 
     virtual int getPeerName(struct sockaddr* remoteAddress, int* len) const {
         return uv_tcp_getpeername(&handle_, remoteAddress, len);
+    }
+
+    virtual int getSockName(struct sockaddr* remoteAddress, int* len) const {
+        return uv_tcp_getsockname(&handle_, remoteAddress, len);
     }
 
     virtual void destroy() {

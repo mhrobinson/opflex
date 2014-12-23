@@ -21,6 +21,8 @@
 
 #include <utility>
 
+#define DEFAULT_COMMSTEST_TIMEOUT 7200
+
 using namespace yajr::comms;
 
 BOOST_AUTO_TEST_SUITE(asynchronous_sockets)
@@ -78,9 +80,6 @@ class CommsFixture {
         }
 
         internal::Peer::LoopData::getLoopData(loop_)->up();
-        uv_timer_init(uv_default_loop(), &timer_);
-        uv_timer_start(&timer_, timeout_cb, 7200, 0);
-        uv_unref((uv_handle_t*) &timer_);
 
     }
 
@@ -367,7 +366,8 @@ class CommsFixture {
             range_t final_peers,
             pc post_conditions,
             range_t transient_peers = range_t(0, 0),
-            bool timeout = false
+            unsigned int timeout = DEFAULT_COMMSTEST_TIMEOUT,
+            bool should_timeout = false
             ) {
 
         LOG(DEBUG);
@@ -375,11 +375,15 @@ class CommsFixture {
         required_final_peers = final_peers;
         required_transient_peers = transient_peers;
         required_post_conditions = post_conditions;
-        expect_timeout = timeout;
+        expect_timeout = should_timeout;
 
         internal::Peer::LoopData::getLoopData(loop_)->up();
         uv_prepare_init(uv_default_loop(), &prepare_);
         uv_prepare_start(&prepare_, check_peer_db_cb);
+
+        uv_timer_init(uv_default_loop(), &timer_);
+        uv_timer_start(&timer_, timeout_cb, timeout, 0);
+        uv_unref((uv_handle_t*) &timer_);
 
         uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
@@ -613,7 +617,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive, CommsFixture ) {
 
     BOOST_CHECK_EQUAL(!p, 0);
 
-    loop_until_final(range_t(4,4), pc_successful_connect, range_t(0,0), true); // 4 is to cause a timeout
+    loop_until_final(range_t(4,4), pc_successful_connect, range_t(0,0), DEFAULT_COMMSTEST_TIMEOUT, true); // 4 is to cause a timeout
 
 }
 
@@ -1201,6 +1205,90 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_client_retry_more_than_once, CommsFixture )
     BOOST_CHECK_EQUAL(!p, 0);
 
     loop_until_final(range_t(0,0), pc_no_server_and_client_gives_up, range_t(0,0));
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_destroy_client_for_non_existent_host, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("non_existent_host.", "65521", destroyOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_non_existent);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_destroy_client_for_non_existent_service, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("127.0.0.1", "65520", destroyOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(0,0), pc_no_peers);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_disconnect_client_for_non_existent_host, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("localhost", "65519", disconnectOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_retrying_client);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_disconnect_client_for_non_existent_service, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("localhost", "65518", disconnectOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_retrying_client);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_non_routable_host, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("127.0.0.127", "65517", doNothingOnConnect);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_non_existent, range_t(0,0), 90000);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_destroy_client_for_non_routable_host, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("127.0.0.127", "65516", destroyOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(0,0), pc_no_peers, range_t(0,0), 90000);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_disconnect_client_for_non_routable_host, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    ::yajr::Peer * p = ::yajr::Peer::create("127.0.0.127", "65515", disconnectOnCallback);
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_non_existent, range_t(0,0), 90000);
 
 }
 
