@@ -175,7 +175,9 @@ private:
     /** globally unique opflex domain */
     std::string domain;
 
+#ifndef SIMPLE_RPC
     std::auto_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> clientCtx;
+#endif
 
     uv_mutex_t conn_mutex;
     uv_key_t conn_mutex_key;

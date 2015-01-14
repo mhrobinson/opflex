@@ -128,7 +128,9 @@ private:
     std::string hostname;
     int port;
 
+#ifndef SIMPLE_RPC
     std::auto_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> serverCtx;
+#endif
 
     std::string name;
     std::string domain;

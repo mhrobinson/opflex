@@ -103,11 +103,11 @@ void OpflexServerConnection::on_state_change(yajr::Peer * p, void * data,
             int len = sizeof(name);
             int rc = p->getPeerName((struct sockaddr*)&name, &len);
             conn->setRemotePeer(rc, name);
-
+#ifndef SIMPLE_RPC
             ZeroCopyOpenSSL::Ctx* serverCtx = conn->listener->serverCtx.get();
             if (serverCtx)
                 ZeroCopyOpenSSL::attachTransport(p, serverCtx);
-
+#endif
             conn->handler->connected();
         }
         break;

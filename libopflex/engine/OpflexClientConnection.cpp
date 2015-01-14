@@ -160,9 +160,10 @@ void OpflexClientConnection::on_state_change(Peer * p, void * data,
     case yajr::StateChange::CONNECT:
         LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
                   << "New client connection";
+#ifndef SIMPLE_RPC
         if (conn->pool->clientCtx.get())
             ZeroCopyOpenSSL::attachTransport(p, conn->pool->clientCtx.get());
-
+#endif
         conn->pool->updatePeerStatus(conn->hostname, conn->port,
                                      PeerStatusListener::CONNECTED);
         conn->handler->connected();
