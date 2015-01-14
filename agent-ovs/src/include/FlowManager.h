@@ -6,8 +6,8 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#ifndef _OPFLEX_ENFORCER_FLOWMANAGER_H_
-#define _OPFLEX_ENFORCER_FLOWMANAGER_H_
+#ifndef OVSAGENT_FLOWMANAGER_H_
+#define OVSAGENT_FLOWMANAGER_H_
 
 #include <utility>
 
@@ -24,8 +24,7 @@
 #include "FlowExecutor.h"
 #include "IdGenerator.h"
 
-namespace opflex {
-namespace enforcer {
+namespace ovsagent {
 
 /**
  * @brief Makes changes to OpenFlow tables to be in sync with state
@@ -34,12 +33,13 @@ namespace enforcer {
  * of flow modifications that represent the changes and apply these
  * modifications.
  */
-class FlowManager : public ovsagent::EndpointListener,
-                    public ovsagent::PolicyListener,
+class FlowManager : public EndpointListener,
+                    public PolicyListener,
                     public OnConnectListener,
-                    public MessageHandler {
+                    public MessageHandler,
+                    public PortStatusListener {
 public:
-    FlowManager(ovsagent::Agent& agent);
+    FlowManager(Agent& agent);
     ~FlowManager() {}
 
     /**
@@ -56,16 +56,14 @@ public:
         executor = e;
     }
 
-    void SetPortMapper(PortMapper *m) {
-        portMapper = m;
-    }
+    void SetPortMapper(PortMapper *m);
 
     /**
      * Set the object used for reading flows and groups from the switch.
      *
      * @param r The reader object
      */
-    void SetFlowReader(ovsagent::FlowReader *r) {
+    void SetFlowReader(FlowReader *r) {
         reader = r;
     }
 
@@ -75,7 +73,7 @@ public:
      *
      * @param connection the connection to use for learning
      */
-    void registerConnection(opflex::enforcer::SwitchConnection* connection);
+    void registerConnection(SwitchConnection* connection);
 
     /**
      * Unregister the given connection.
@@ -144,6 +142,22 @@ public:
     void SetEncapType(EncapType encapType);
     void SetEncapIface(const std::string& encapIface);
 
+    /**
+     * Flooding scopes supported by the flow manager.
+     */
+    enum FloodScope {
+        /**
+         * Flood to all endpoints within a flood domain
+         */
+        FLOOD_DOMAIN,
+
+        /**
+         * Flood to endpoints only within an endpoint group
+         */
+        ENDPOINT_GROUP
+    };
+    void SetFloodScope(FloodScope floodScope);
+
     void SetTunnelRemoteIp(const std::string& tunnelRemoteIp);
     void SetVirtualRouter(bool virtualRouterEnabled);
     void SetVirtualRouterMac(const std::string& mac);
@@ -171,9 +185,13 @@ public:
     /** Interface: PolicyListener */
     void egDomainUpdated(const opflex::modb::URI& egURI);
     void contractUpdated(const opflex::modb::URI& contractURI);
+    void configUpdated(const opflex::modb::URI& configURI);
 
     /** Interface: OnConnectListener */
     void Connected(SwitchConnection *swConn);
+
+    /** Interface: PortStatusListener */
+    void portStatusUpdate(const std::string& portName, uint32_t portNo);
 
     /**
      * Get the VNIDs for the specified endpoint groups.
@@ -194,11 +212,27 @@ public:
     uint32_t GetId(opflex::modb::class_id_t cid, const opflex::modb::URI& uri);
 
     /**
-     * Get the cookie used for flow entries that are learnt reactively.
+     * Get the cookie used for flow entries that are learned reactively.
      *
      * @return flow-cookie for learnt entries
      */
     static ovs_be64 GetLearnEntryCookie();
+
+    /**
+     * Get the cookie used for learn flow entries that are proactively
+     * installed
+     *
+     * @return flow-cookie for learnt entries
+     */
+    static ovs_be64 GetProactiveLearnEntryCookie();
+
+    /**
+     * Get the cookie used for cookies that direct neighbor discovery
+     * packets to the controller
+     *
+     * @return flow-cookie for ND packets
+     */
+    static ovs_be64 GetNDCookie();
 
     /**
      * Maximum flow priority of the entries in policy table.
@@ -206,7 +240,7 @@ public:
     static const uint16_t MAX_POLICY_RULE_PRIORITY;
 
     // see: MessageHandler
-    void Handle(opflex::enforcer::SwitchConnection *swConn, 
+    void Handle(SwitchConnection *swConn,
                 ofptype type, ofpbuf *msg);
 
     /**
@@ -246,6 +280,14 @@ private:
     void HandleContractUpdate(const opflex::modb::URI& contractURI);
 
     /**
+     * Compare and update flow/group tables due to changes in platform
+     * config
+     *
+     * @param configURI URI of the changed contract
+     */
+    void HandleConfigUpdate(const opflex::modb::URI& configURI);
+
+    /**
      * Handle establishment of connection to a switch by reconciling
      * cached memory state with switch state.
      *
@@ -253,21 +295,36 @@ private:
      */
     void HandleConnection(SwitchConnection *sw);
 
+    /**
+     * Handle changes to port-status by recomputing flows for endpoints
+     * and endpoint groups.
+     *
+     * @param portName Name of the port that changed
+     * @param portNo Port number of the port that changed
+     */
+    void HandlePortStatusUpdate(const std::string& portName, uint32_t portNo);
+
     bool GetGroupForwardingInfo(const opflex::modb::URI& egUri, uint32_t& vnid,
-            uint32_t& rdId, uint32_t& bdId,
+            boost::optional<opflex::modb::URI>& rdURI, uint32_t& rdId, uint32_t& bdId,
             boost::optional<opflex::modb::URI>& fdURI, uint32_t& fdId);
     void UpdateGroupSubnets(const opflex::modb::URI& egUri,
             uint32_t routingDomainId);
     bool WriteFlow(const std::string& objId, int tableId,
-            flow::FlowEntryList& el);
-    bool WriteFlow(const std::string& objId, int tableId, flow::FlowEntry *e);
+            FlowEntryList& el);
+    bool WriteFlow(const std::string& objId, int tableId, FlowEntry *e);
+
+    /**
+     * Update all current group table entries
+     */
+    void UpdateGroupTable();
+
     /**
      * Write a group-table change to the switch
      *
      * @param entry Change to the group-table entry
      * @return true is successful, false otherwise
      */
-    bool WriteGroupMod(const flow::GroupEdit::Entry& entry);
+    bool WriteGroupMod(const GroupEdit::Entry& entry);
 
     /**
      * Create flow entries for the classifier specified and append them
@@ -283,32 +340,33 @@ private:
     void AddEntryForClassifier(modelgbp::gbpe::L24Classifier *classifier,
             uint16_t priority, uint64_t cookie,
             uint32_t& svnid, uint32_t& dvnid,
-            flow::FlowEntryList& entries);
+            FlowEntryList& entries);
 
     static bool ParseIpv4Addr(const std::string& str, uint32_t *ip);
     static bool ParseIpv6Addr(const std::string& str, in6_addr *ip);
 
     /**
-     * Update flow-tables to associate an endpoint with a flood-domain.
+     * Update flow-tables to associate an endpoint with a flood-group.
      *
-     * @param fdURI URI of flood-domain
+     * @param fgrpURI URI of flood-group (flood-domain or endpoint-group)
      * @param endpoint The endpoint to update
      * @param epPort Port number of endpoint
      * @param isPromiscuous whether the endpoint port is promiscuous
+     * @param fd Flood-domain to which the endpoint belongs
      */
-    void UpdateEndpointFloodDomain(const opflex::modb::URI& fdURI,
-                                   const ovsagent::Endpoint& endPoint, 
-                                   uint32_t epPort, 
-                                   bool isPromiscuous, 
-                                   boost::optional<boost::shared_ptr<
-                                       modelgbp::gbp::FloodDomain> >& fd);
+    void UpdateEndpointFloodGroup(const opflex::modb::URI& fgrpURI,
+                                  const Endpoint& endPoint,
+                                  uint32_t epPort,
+                                  bool isPromiscuous,
+                                  boost::optional<boost::shared_ptr<
+                                      modelgbp::gbp::FloodDomain> >& fd);
 
     /**
-     * Update flow-tables to dis-associate an endpoint from any flood-domain.
+     * Update flow-tables to dis-associate an endpoint from any flood-group.
      *
      * @param epUUID UUID of endpoint
      */
-    void RemoveEndpointFromFloodDomain(const std::string& epUUID);
+    void RemoveEndpointFromFloodGroup(const std::string& epUUID);
 
     /*
      * Map of endpoint to the port it is using.
@@ -325,35 +383,38 @@ private:
      * uplinks in the group
      * @return Group-table modification entry
      */
-    flow::GroupEdit::Entry CreateGroupMod(uint16_t type, uint32_t groupId,
-                                          const Ep2PortMap& ep2port,
-                                          bool onlyPromiscuous = false);
+    GroupEdit::Entry CreateGroupMod(uint16_t type, uint32_t groupId,
+                                    const Ep2PortMap& ep2port,
+                                    bool onlyPromiscuous = false);
 
-    ovsagent::Agent& agent;
+    Agent& agent;
     SwitchConnection* connection;
     FlowExecutor* executor;
     PortMapper *portMapper;
-    ovsagent::FlowReader *reader;
+    FlowReader *reader;
 
     FallbackMode fallbackMode;
     EncapType encapType;
     std::string encapIface;
+    FloodScope floodScope;
     boost::asio::ip::address tunnelDst;
+    boost::optional<boost::asio::ip::address> mcastTunDst;
     bool virtualRouterEnabled;
     uint8_t routerMac[6];
-    flow::TableState flowTables[NUM_FLOW_TABLES];
+    TableState flowTables[NUM_FLOW_TABLES];
     std::string flowIdCache;
 
     /*
-     * Map of flood-domain URI to the endpoints associated with it.
+     * Map of flood-group URI to the endpoints associated with it.
+     * The flood-group can either be a flood-domain or an endpoint-group
      */
-    typedef boost::unordered_map<opflex::modb::URI, Ep2PortMap> FdMap;
-    FdMap fdMap;
+    typedef boost::unordered_map<opflex::modb::URI, Ep2PortMap> FloodGroupMap;
+    FloodGroupMap floodGroupMap;
 
-    ovsagent::WorkQueue workQ;
+    WorkQueue workQ;
 
     const char * GetIdNamespace(opflex::modb::class_id_t cid);
-    ovsagent::IdGenerator idGen;
+    IdGenerator idGen;
 
     bool isSyncing;
 
@@ -385,14 +446,14 @@ private:
          * Callback function provided to FlowReader to process received
          * flow table entries.
          */
-        void GotFlows(int tableNum, const flow::FlowEntryList& flows,
+        void GotFlows(int tableNum, const FlowEntryList& flows,
             bool done);
 
         /**
          * Callback function provided to FlowReader to process received
          * group table entries.
          */
-        void GotGroups(const flow::GroupEdit::EntryList& groups,
+        void GotGroups(const GroupEdit::EntryList& groups,
             bool done);
 
         /**
@@ -425,13 +486,13 @@ private:
          * @param ge Container to append the changes
          */
         void CheckGroupEntry(uint32_t groupId,
-                const Ep2PortMap& epMap, bool prom, flow::GroupEdit& ge);
+                const Ep2PortMap& epMap, bool prom, GroupEdit& ge);
 
         FlowManager& flowManager;
-        flow::FlowEntryList recvFlows[FlowManager::NUM_FLOW_TABLES];
+        FlowEntryList recvFlows[FlowManager::NUM_FLOW_TABLES];
         bool tableDone[FlowManager::NUM_FLOW_TABLES];
 
-        typedef boost::unordered_map<uint32_t, flow::GroupEdit::Entry> GroupMap;
+        typedef boost::unordered_map<uint32_t, GroupEdit::Entry> GroupMap;
         GroupMap recvGroups;
         bool groupsDone;
 
@@ -442,6 +503,8 @@ private:
 
     FlowSyncer flowSyncer;
 
+    volatile bool stopping;
+
     /**
      * Timer callback that begins reconciliation.
      */
@@ -449,10 +512,18 @@ private:
     boost::scoped_ptr<boost::asio::deadline_timer> connectTimer;
     long connectDelayMs;
 
+    /**
+     * Timer callback for router advertisements
+     */
+    void OnAdvertTimer(const boost::system::error_code& ec);
+    boost::scoped_ptr<boost::asio::deadline_timer> advertTimer;
+    volatile int initialAdverts;
+
     bool opflexPeerConnected;
+
+    void initPlatformConfig();
 };
 
-}   // namespace enforcer
-}   // namespace opflex
+} // namespace ovsagent
 
-#endif // _OPFLEX_ENFORCER_FLOWMANAGER_H_
+#endif // OVSAGENT_FLOWMANAGER_H_

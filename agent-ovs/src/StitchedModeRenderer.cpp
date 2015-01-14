@@ -16,12 +16,11 @@ namespace ovsagent {
 
 using opflex::ofcore::OFFramework;
 using boost::property_tree::ptree;
-using opflex::enforcer::FlowManager;
 
 StitchedModeRenderer::StitchedModeRenderer(Agent& agent_)
     : Renderer(agent_), flowManager(agent_), connection(NULL),
       statsManager(&agent_, portMapper), tunnelEpManager(&agent_),
-      virtualRouter(true), started(false) {
+      uplinkVlan(0), virtualRouter(true), started(false) {
     flowManager.SetFlowReader(&flowReader);
     flowManager.SetExecutor(&flowExecutor);
     flowManager.SetPortMapper(&portMapper);
@@ -46,12 +45,14 @@ void StitchedModeRenderer::start() {
     if (encapType == FlowManager::ENCAP_VXLAN ||
         encapType == FlowManager::ENCAP_IVXLAN) {
         tunnelEpManager.setUplinkIface(uplinkIface);
+        tunnelEpManager.setUplinkVlan(uplinkVlan);
         tunnelEpManager.start();
     }
 
     flowManager.SetFallbackMode(FlowManager::FALLBACK_PROXY);
     flowManager.SetEncapType(encapType);
     flowManager.SetEncapIface(encapIface);
+    flowManager.SetFloodScope(FlowManager::ENDPOINT_GROUP);
     if (encapType == FlowManager::ENCAP_VXLAN ||
         encapType == FlowManager::ENCAP_IVXLAN)
         flowManager.SetTunnelRemoteIp(tunnelRemoteIp);
@@ -59,7 +60,7 @@ void StitchedModeRenderer::start() {
     flowManager.SetVirtualRouterMac(virtualRouterMac);
     flowManager.SetFlowIdCache(flowIdCache);
 
-    connection = new opflex::enforcer::SwitchConnection(ovsBridgeName);
+    connection = new SwitchConnection(ovsBridgeName);
     portMapper.InstallListenersForConnection(connection);
     flowExecutor.InstallListenersForConnection(connection);
     flowReader.installListenersForConnection(connection);
@@ -109,6 +110,7 @@ void StitchedModeRenderer::setProperties(const ptree& properties) {
     static const std::string ENCAP_VLAN("encap.vlan");
 
     static const std::string UPLINK_IFACE("uplink-iface");
+    static const std::string UPLINK_VLAN("uplink-vlan");
     static const std::string ENCAP_IFACE("encap-iface");
     static const std::string REMOTE_IP("remote-ip");
 
@@ -141,6 +143,7 @@ void StitchedModeRenderer::setProperties(const ptree& properties) {
         encapType = FlowManager::ENCAP_VXLAN;
         encapIface = vxlan.get().get<std::string>(ENCAP_IFACE, "");
         uplinkIface = vxlan.get().get<std::string>(UPLINK_IFACE, "");
+        uplinkVlan = vxlan.get().get<uint16_t>(UPLINK_VLAN, 0);
         tunnelRemoteIp = vxlan.get().get<std::string>(REMOTE_IP, "");
         count += 1;
     }

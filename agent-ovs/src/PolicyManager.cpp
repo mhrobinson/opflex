@@ -20,6 +20,7 @@ namespace ovsagent {
 
 using std::vector;
 using std::string;
+using opflex::modb::Mutator;
 using opflex::ofcore::OFFramework;
 using opflex::modb::class_id_t;
 using opflex::modb::URI;
@@ -32,7 +33,9 @@ using boost::optional;
 using boost::unordered_set;
 
 PolicyManager::PolicyManager(OFFramework& framework_)
-    : framework(framework_), domainListener(*this), contractListener(*this) {
+    : framework(framework_), opflexDomain("default"),
+      domainListener(*this), contractListener(*this),
+      configListener(*this) {
 
 }
 
@@ -46,6 +49,9 @@ void PolicyManager::start() {
     using namespace modelgbp;
     using namespace modelgbp::gbp;
     using namespace modelgbp::gbpe;
+
+    platform::Config::registerListener(framework, &configListener);
+
     BridgeDomain::registerListener(framework, &domainListener);
     FloodDomain::registerListener(framework, &domainListener);
     RoutingDomain::registerListener(framework, &domainListener);
@@ -57,6 +63,15 @@ void PolicyManager::start() {
     Subject::registerListener(framework, &contractListener);
     Rule::registerListener(framework, &contractListener);
     L24Classifier::registerListener(framework, &contractListener);
+
+    // resolve platform config
+    Mutator mutator(framework, "init");
+    optional<shared_ptr<dmtree::Root> > root(dmtree::Root::resolve(URI::ROOT));
+    if (root)
+        root.get()->addDomainConfig()
+            ->addDomainConfigToConfigRSrc()
+            ->setTargetConfig(opflexDomain);
+    mutator.commit();
 }
 
 void PolicyManager::stop() {
@@ -79,6 +94,7 @@ void PolicyManager::stop() {
 
     lock_guard<mutex> guard(state_mutex);
     group_map.clear();
+    vnid_map.clear();
     subnet_ref_map.clear();
 }
 
@@ -202,8 +218,12 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
 
     optional<shared_ptr<InstContext> > groupInstCtx;
     groupInstCtx = epg.get()->resolveGbpeInstContext();
+    if (gs.vnid)
+        vnid_map.erase(gs.vnid.get());
     if (groupInstCtx) {
-        gs.vnid = groupInstCtx.get()->getVnid();
+        gs.vnid = groupInstCtx.get()->getEncapId();
+        if (gs.vnid)
+            vnid_map.insert(std::make_pair(gs.vnid.get(), egURI));
     }
 
     optional<shared_ptr<RoutingDomain> > newrd;
@@ -315,15 +335,36 @@ PolicyManager::getVnidForGroup(const opflex::modb::URI& eg) {
     return it != group_map.end() ? it->second.vnid : boost::none;
 }
 
+boost::optional<opflex::modb::URI>
+PolicyManager::getGroupForVnid(uint32_t vnid) {
+    lock_guard<mutex> guard(state_mutex);
+    vnid_map_t::iterator it = vnid_map.find(vnid);
+    return it != vnid_map.end() ? optional<URI>(it->second) : boost::none;
+}
+
 bool PolicyManager::groupExists(const opflex::modb::URI& eg) {
     lock_guard<mutex> guard(state_mutex);
     return group_map.find(eg) != group_map.end();
+}
+
+void PolicyManager::getGroups(uri_set_t& epURIs) {
+    lock_guard<mutex> guard(state_mutex);
+    BOOST_FOREACH (const group_map_t::value_type& kv, group_map) {
+        epURIs.insert(kv.first);
+    }
 }
 
 void PolicyManager::notifyContract(const URI& contractURI) {
     lock_guard<mutex> guard(listener_mutex);
     BOOST_FOREACH(PolicyListener *listener, policyListeners) {
         listener->contractUpdated(contractURI);
+    }
+}
+
+void PolicyManager::notifyConfig(const URI& configURI) {
+    lock_guard<mutex> guard(listener_mutex);
+    BOOST_FOREACH(PolicyListener *listener, policyListeners) {
+        listener->configUpdated(configURI);
     }
 }
 
@@ -594,6 +635,16 @@ void PolicyManager::ContractListener::objectUpdated(class_id_t classId,
     BOOST_FOREACH(const URI& u, contractsToNotify) {
         pmanager.notifyContract(u);
     }
+}
+
+PolicyManager::ConfigListener::ConfigListener(PolicyManager& pmanager_)
+    : pmanager(pmanager_) {}
+
+PolicyManager::ConfigListener::~ConfigListener() {}
+
+void PolicyManager::ConfigListener::objectUpdated(class_id_t classId,
+                                                  const URI& uri) {
+    pmanager.notifyConfig(uri);
 }
 
 } /* namespace ovsagent */

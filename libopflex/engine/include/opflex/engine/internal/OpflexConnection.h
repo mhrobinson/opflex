@@ -56,6 +56,11 @@ public:
     virtual ~OpflexConnection();
 
     /**
+     * Initialize SSL global context
+     */
+    static void initSSL();
+
+    /**
      * Connect to the remote host.  Must be called from the libuv
      * processing thread.
      */
@@ -183,6 +188,8 @@ private:
 
     void doWrite(OpflexMessage* message);
     void cleanup();
+
+    virtual void notifyReady();
 
     friend class OpflexHandler;
 };

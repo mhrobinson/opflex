@@ -15,6 +15,7 @@
 #include <utility>
 #include <map>
 #include <set>
+#include <memory>
 
 #include <boost/unordered_map.hpp>
 #include <boost/noncopyable.hpp>
@@ -22,6 +23,10 @@
 
 #include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/engine/internal/OpflexClientConnection.h"
+#include "opflex/ofcore/PeerStatusListener.h"
+#ifndef SIMPLE_RPC
+#include "yajr/transport/ZeroCopyOpenSSL.hpp"
+#endif
 
 #pragma once
 #ifndef OPFLEX_ENGINE_OPFLEXPOOL_H
@@ -80,6 +85,17 @@ public:
     void stop();
 
     /**
+     * Enable SSL for connections to opflex peers
+     *
+     * @param caStorePath the filesystem path to a directory
+     * containing CA certificates, or to a file containing a specific
+     * CA certificate.
+     * @param verifyPeers set to true to verify that peer certificates
+     * properly chain to a trusted root
+     */
+    void enableSSL(const std::string& caStorePath, bool verifyPeers = true);
+
+    /**
      * Add an OpFlex peer.
      *
      * @param hostname the hostname or IP address to connect to
@@ -105,6 +121,14 @@ public:
      * connection
      */
     OpflexClientConnection* getPeer(const std::string& hostname, int port);
+
+    /**
+     * Register the given peer status listener to get updates on the
+     * health of the connection pool and on individual connections.
+     *
+     * @param listener the listener to register
+     */
+    void registerPeerStatusListener(ofcore::PeerStatusListener* listener);
 
     /**
      * Set the roles for the specified connection
@@ -151,6 +175,8 @@ private:
     /** globally unique opflex domain */
     std::string domain;
 
+    std::auto_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> clientCtx;
+
     uv_mutex_t conn_mutex;
     uv_key_t conn_mutex_key;
 
@@ -183,6 +209,9 @@ private:
     uv_async_t writeq_async;
     uv_timer_t timer;
 
+    std::list<ofcore::PeerStatusListener*> peerStatusListeners;
+    ofcore::PeerStatusListener::Health curHealth;
+
     void doRemovePeer(const std::string& hostname, int port);
     void doAddPeer(const std::string& hostname, int port);
     void doSetRoles(ConnData& cd, uint8_t newroles);
@@ -201,6 +230,9 @@ private:
     static void on_conn_closed(OpflexClientConnection* conn);
     static void on_timer(uv_timer_t* timer);
 #endif
+
+    void updatePeerStatus(const std::string& hostname, int port,
+                          ofcore::PeerStatusListener::PeerStatus status);
 
     friend class OpflexClientConnection;
 };

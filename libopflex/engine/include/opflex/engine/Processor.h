@@ -71,6 +71,17 @@ public:
                            const std::string& domain);
 
     /**
+     * Enable SSL for connections to opflex peers
+     *
+     * @param caStorePath the filesystem path to a directory
+     * containing CA certificates, or to a file containing a specific
+     * CA certificate.
+     * @param verifyPeers set to true to verify that peer certificates
+     * properly chain to a trusted root
+     */
+    void enableSSL(const std::string& caStorePath, bool verifyPeers = true);
+
+    /**
      * Add an OpFlex peer.
      *
      * @param hostname the hostname or IP address to connect to
@@ -78,6 +89,14 @@ public:
      * @see opflex::ofcore::OFFramework::addPeer
      */
     void addPeer(const std::string& hostname, int port);
+
+    /**
+     * Register the given peer status listener to get updates on the
+     * health of the connection pool and on individual connections.
+     *
+     * @param listener the listener to register
+     */
+    void registerPeerStatusListener(ofcore::PeerStatusListener* listener);
 
     /**
      * Start the processor thread.  Should call only after the

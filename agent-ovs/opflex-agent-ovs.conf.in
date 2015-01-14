@@ -1,4 +1,9 @@
 {
+    // Logging configuration
+    // "log": {
+    //     "level": "info"
+    // },
+
     // Configuration related to the OpFlex protocol
     "opflex": {
         // The globally unique policy domain for this agent.
@@ -14,7 +19,20 @@
         "peers": [
             // EXAMPLE:
             // {"hostname": "10.0.0.30", "port": 8009}
-        ]
+        ],
+
+        "ssl": {
+            // SSL mode.  Possible values:
+            // disabled: communicate without encryption
+            // encrypted: encrypt but do not verify peers
+            // secure: encrypt and verify peer certificates
+            "mode": "encrypted",
+
+            // The path to a directory containing trusted certificate
+            // authority public certificates, or a file containing a
+            // specific CA certificate.
+            "ca-store": "/etc/ssl/certs/"
+        }
     },
 
     // Endpoint sources provide metadata about local endpoints
@@ -41,6 +59,10 @@
         //             // The name of the interface whose IP should be used
         //             // as the source IP in encapsulated traffic.
         //             "uplink-iface": "team0.4093",
+        //
+        //             // The vlan tag, if any, used on the uplink interface.
+        //             // Set to zero or omit if the uplink is untagged.
+        //             "uplink-vlan": 4093,
         //
         //             // The IP address used for the destination IP in
         //             // the encapsulated traffic.  This should be an
@@ -70,7 +92,7 @@
         //     },
         //
         //     // Location to store cached IDs for managing flow state
-        //     "flowid-cache-dir": "DEFAULT_FLOWID_CACHE_DIR",
+        //     "flowid-cache-dir": "DEFAULT_FLOWID_CACHE_DIR"
         // }
     }
 }

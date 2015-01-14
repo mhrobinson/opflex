@@ -16,7 +16,7 @@
 #include "logging.h"
 
 using namespace std;
-using namespace opflex::enforcer;
+using namespace ovsagent;
 
 class MockConnection : public SwitchConnection {
 public:
@@ -40,6 +40,16 @@ public:
     }
 
     ofpbuf *lastSentMsg;
+};
+
+class MockListener : public PortStatusListener {
+public:
+    void portStatusUpdate(const string& portName, uint32_t portNo) {
+        lastPortName = portName;
+        lastPortNo = portNo;
+    }
+    string lastPortName;
+    uint16_t lastPortNo;
 };
 
 class PortMapperFixture {
@@ -71,7 +81,7 @@ public:
     }
 
     ofpbuf *MakeReplyMsg(size_t startIdx, size_t endIdx, bool more) {
-        ::list replies;
+        ovs_list replies;
         ofpmp_init(&replies, (ofp_header *)ofpbuf_data(conn.lastSentMsg));
         for (size_t i = startIdx; i < endIdx && i < ports.size(); ++i) {
             ofputil_append_port_desc_stats_reply(&ports[i], &replies);
@@ -106,6 +116,7 @@ public:
         ofptype t;
         ofptype_decode(&t, (ofp_header *)ofpbuf_data(msg));
         pm.Handle(&conn, t, msg);
+        ofpbuf_delete(msg);
     }
 
     MockConnection conn;
@@ -113,7 +124,7 @@ public:
     std::vector<ofputil_phy_port> ports;
 };
 
-BOOST_AUTO_TEST_SUITE(portmapper_test)
+BOOST_AUTO_TEST_SUITE(PortMapper_test)
 
 BOOST_FIXTURE_TEST_CASE(portdesc_single, PortMapperFixture) {
     pm.Connected(&conn);
@@ -129,6 +140,7 @@ BOOST_FIXTURE_TEST_CASE(portdesc_single, PortMapperFixture) {
 
     /* spurious message */
     reply = MakeReplyMsg(6, ports.size(), false);
+    Received(pm, reply);
     BOOST_CHECK(pm.FindPort("test-port-45") == OFPP_NONE);
 }
 
@@ -175,6 +187,29 @@ BOOST_FIXTURE_TEST_CASE(portstatus, PortMapperFixture) {
 
     notif = MakePortStatusMsg(2, OFPPR_DELETE); // delete non-existent
     Received(pm, notif);
+}
+
+BOOST_FIXTURE_TEST_CASE(portstatus_listener, PortMapperFixture) {
+    pm.Connected(&conn);
+
+    MockListener psl;
+    pm.registerPortStatusListener(&psl);
+
+    ofpbuf *reply1 = MakeReplyMsg(0, 1, false);
+    Received(pm, reply1);
+    BOOST_CHECK_EQUAL(psl.lastPortName, "test-port-5");
+    BOOST_CHECK_EQUAL(psl.lastPortNo, 5);
+
+    ofpbuf *notif = MakePortStatusMsg(2, OFPPR_ADD);
+    Received(pm, notif);
+    BOOST_CHECK_EQUAL(psl.lastPortName, "test-port-15");
+    BOOST_CHECK_EQUAL(psl.lastPortNo, 15);
+
+    pm.unregisterPortStatusListener(&psl);
+    notif = MakePortStatusMsg(3, OFPPR_DELETE);
+    Received(pm, notif);
+    BOOST_CHECK_EQUAL(psl.lastPortName, "test-port-15");
+    BOOST_CHECK_EQUAL(psl.lastPortNo, 15);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

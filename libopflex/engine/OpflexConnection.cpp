@@ -18,7 +18,10 @@
 #include "LockGuard.h"
 
 #ifndef SIMPLE_RPC
+#include "yajr/transport/ZeroCopyOpenSSL.hpp"
 #include "yajr/rpc/message_factory.hpp"    
+
+static uv_once_t ssl_once = UV_ONCE_INIT;
 #endif
 
 namespace opflex {
@@ -32,6 +35,7 @@ using boost::scoped_ptr;
 using yajr::rpc::OutboundRequest;
 using yajr::rpc::OutboundResult;
 using yajr::rpc::OutboundError;
+using yajr::transport::ZeroCopyOpenSSL;
 #endif
 
 OpflexConnection::OpflexConnection(HandlerFactory& handlerFactory)
@@ -55,6 +59,18 @@ OpflexConnection::~OpflexConnection() {
     uv_mutex_destroy(&queue_mutex);
 }
 
+static void init_ssl() {
+#ifndef SIMPLE_RPC
+    ZeroCopyOpenSSL::initOpenSSL(true);
+#endif
+}
+
+void OpflexConnection::initSSL() {
+#ifndef SIMPLE_RPC
+    uv_once(&ssl_once, init_ssl);
+#endif
+}
+
 void OpflexConnection::connect() {}
 
 void OpflexConnection::cleanup() {
@@ -75,6 +91,10 @@ void OpflexConnection::close() {
 
 bool OpflexConnection::isReady() { 
     return handler->isReady();
+}
+
+void OpflexConnection::notifyReady() { 
+
 }
 
 #ifdef SIMPLE_RPC

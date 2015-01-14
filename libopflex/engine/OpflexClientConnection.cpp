@@ -24,7 +24,9 @@ namespace internal {
 using std::string;
 #ifndef SIMPLE_RPC
 using yajr::Peer;
+using yajr::transport::ZeroCopyOpenSSL;
 #endif
+using ofcore::PeerStatusListener;
 
 OpflexClientConnection::OpflexClientConnection(HandlerFactory& handlerFactory, 
                                                OpflexPool* pool_,
@@ -35,7 +37,7 @@ OpflexClientConnection::OpflexClientConnection(HandlerFactory& handlerFactory,
 #ifdef SIMPLE_RPC
       retry(true),
 #endif
-      active(false), started(false), closing(false) {
+      started(false), active(false), closing(false) {
 
 }
 
@@ -51,10 +53,16 @@ const std::string& OpflexClientConnection::getDomain() {
     return pool->getDomain();
 }
 
+void OpflexClientConnection::notifyReady() {
+    pool->updatePeerStatus(hostname, port, PeerStatusListener::READY);
+}
+
 void OpflexClientConnection::connect() {
     if (started) return;
     started = true;
     active = true;
+
+    pool->updatePeerStatus(hostname, port, PeerStatusListener::CONNECTING);
 
     std::stringstream rp;
     rp << hostname << ":" << port;
@@ -99,6 +107,7 @@ void OpflexClientConnection::disconnect() {
 }
 
 void OpflexClientConnection::close() {
+    pool->updatePeerStatus(hostname, port, PeerStatusListener::CLOSING);
 #ifdef SIMPLE_RPC
     retry = false;
 #endif
@@ -151,15 +160,29 @@ void OpflexClientConnection::on_state_change(Peer * p, void * data,
     case yajr::StateChange::CONNECT:
         LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
                   << "New client connection";
+        if (conn->pool->clientCtx.get())
+            ZeroCopyOpenSSL::attachTransport(p, conn->pool->clientCtx.get());
+
+        conn->pool->updatePeerStatus(conn->hostname, conn->port,
+                                     PeerStatusListener::CONNECTED);
         conn->handler->connected();
         break;
     case yajr::StateChange::DISCONNECT:
         LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
                   << "Disconnected";
+        if (!conn->closing)
+            conn->pool->updatePeerStatus(conn->hostname, conn->port,
+                                         PeerStatusListener::CONNECTING);
         break;
     case yajr::StateChange::FAILURE:
         LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
                    << "Connection error: " << uv_strerror(error);
+        if (conn->closing)
+            conn->pool->updatePeerStatus(conn->hostname, conn->port,
+                                         PeerStatusListener::DISCONNECTED);
+        else
+            conn->pool->updatePeerStatus(conn->hostname, conn->port,
+                                         PeerStatusListener::CONNECTING);
         break;
     case yajr::StateChange::DELETE:
         LOG(INFO) << "[" << conn->getRemotePeer() << "] " 

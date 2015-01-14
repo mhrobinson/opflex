@@ -14,6 +14,7 @@
 #include <yajr/rpc/message_factory.hpp>
 #include <yajr/yajr.hpp>
 #include <yajr/rpc/rpc.hpp>
+#include <yajr/transport/PlainText.hpp>
 
 #include <rapidjson/document.h>
 #include <iovec-utils.hh>
@@ -249,6 +250,7 @@ class Peer : public SafeListBaseHook {
               connected_(0),
               destroying_(0),
               passive_(passive),
+              choked_(1),
               ___________(0),
               status_(status)
             {
@@ -343,8 +345,9 @@ class Peer : public SafeListBaseHook {
     unsigned char connected_  :1;
     unsigned char destroying_ :1;
     unsigned char passive_    :1;
-          mutable
-    unsigned char ___________ :2;
+    mutable
+    unsigned char choked_     :1;
+    unsigned char ___________ :1;
     unsigned char status_     :3;
 
   protected:
@@ -367,6 +370,32 @@ class Peer : public SafeListBaseHook {
 
 class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
 
+    friend
+    std::ostream& operator<< (
+        std::ostream& os,
+        ::yajr::comms::internal::Peer const * p
+    );
+
+    template< typename E >
+    friend
+    int
+    transport::Cb< E >::send_cb(CommunicationPeer const *);
+
+    template< typename E >
+    friend
+    void
+    transport::Cb< E >::on_sent(CommunicationPeer const *);
+
+    template< typename E >
+    friend
+    void
+    transport::Cb< E >::on_read(uv_stream_t *, ssize_t, uv_buf_t const *);
+
+    template< typename E >
+    friend
+    struct
+    transport::Cb< E >::StaticHelpers;
+
 #ifdef COMMS_DEBUG_OBJECT_COUNT
     static ::boost::atomic<size_t> counter;
 #endif
@@ -386,11 +415,13 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
                 pendingBytes_(0),
                 nextId_(0),
                 keepAliveInterval_(0),
-                lastHeard_(0)
+                lastHeard_(0),
+                transport_(transport::PlainText::getPlainTextTransport())
             {
                 req_.data = this;
                 handle_.loop = uvLoopSelector_(getData());
                 getLoopData()->up();
+
 #ifdef COMMS_DEBUG_OBJECT_COUNT
                 ++counter;
 #endif
@@ -407,14 +438,22 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
 #endif
     virtual void retry() = 0;
 
-    size_t readChunk(char const * buffer) {
+    size_t readChunk(char const * buffer) const {
         ssize_t chunk_size = - ssIn_.tellp();
         ssIn_ << buffer;
         chunk_size += ssIn_.tellp();
         return chunk_size;
     }
 
-    yajr::rpc::InboundMessage * parseFrame();
+    void readBuffer(
+            char * buffer,
+            size_t nread,
+            bool canWriteJustPastTheEnd = false) const;
+    void readBufferZ(
+            char const * bufferZ,
+            size_t n) const;
+
+    yajr::rpc::InboundMessage * parseFrame() const;
 
     void onWrite();
 
@@ -425,9 +464,10 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     }
 
     int write() const;
+    int writeIOV(std::vector<iovec> &) const;
 
-    int   choke();
-    int unchoke();
+    int   choke() const;
+    int unchoke() const;
 
     void * getData() const {
         return data_;
@@ -489,7 +529,7 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
         return nextId_++;
     }
 
-    void bumpLastHeard() {
+    void bumpLastHeard() const {
         LOG(DEBUG) << this << " " << lastHeard_ << " -> " << now();
         lastHeard_ = now();
     }
@@ -502,8 +542,12 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
         return uv_now(getUvLoop());
     }
 
-    void onError(int error) {
-        connectionHandler_(this, data_, ::yajr::StateChange::FAILURE, error);
+    void onError(int error) const {
+        connectionHandler_(
+                const_cast<CommunicationPeer *>(this),
+                data_,
+                ::yajr::StateChange::FAILURE,
+                error);
     }
 
     void onConnect() {
@@ -515,10 +559,24 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
         uv_unref((uv_handle_t*) &keepAliveTimer_);
 
         connectionHandler_(this, data_, ::yajr::StateChange::CONNECT, 0);
+
+        /* some transports, like for example SSL/TLS, need to start talking
+         * before there's anything to say */
+        (void) write();
     }
 
     void onDisconnect() {
-        LOG(DEBUG);
+
+        LOG(DEBUG)
+            << this
+            << " connected_ = "
+            << static_cast< bool >(connected_)
+        ;
+
+        if (!connected_) {
+            return;
+        }
+
         connected_ = 0;
 
         if (getKeepAliveInterval()) {
@@ -550,9 +608,9 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     }
 
     virtual void disconnect() {
-        if (connected_) {
-            onDisconnect();
-        }
+
+        onDisconnect();
+
     }
 
     virtual int getPeerName(struct sockaddr* remoteAddress, int* len) const {
@@ -568,14 +626,19 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
 
         assert(!destroying_);
         if(destroying_) {
+            LOG(WARNING)
+                << this
+                << " Double destroy() detected"
+            ;
+
             return;
         }
 
      // Peer::destroy();
         destroying_ = 1;
-        if (connected_) {
-            onDisconnect();
-        }
+
+        onDisconnect();
+
     }
 
     uint64_t getKeepAliveInterval() const {
@@ -630,6 +693,20 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     void logDeque() const;
 #endif // NEED_DESPERATE_CPU_BOGGING_AND_THREAD_UNSAFE_DEBUGGING
 
+    yajr::transport::Transport::Engine * getTransportData() {
+        return transport_.data_;
+    }
+
+    template< class E >
+    E * getEngine() const {
+        return transport_.getEngine< E >();
+    }
+
+    void * detachTransport() {
+        transport_.~Transport();
+
+        return &transport_;
+    }
   protected:
     /* don't leak memory! */
     virtual ~CommunicationPeer() {
@@ -639,11 +716,12 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     }
 
   private:
+
     ::yajr::Peer::StateChangeCb connectionHandler_;
     void * data_;
 
-    rapidjson::Document docIn_;
-    std::stringstream ssIn_;
+    mutable rapidjson::Document docIn_;
+    mutable std::stringstream ssIn_;
 
     mutable ::yajr::internal::StringQueue s_;
     mutable ::yajr::rpc::SendHandler writer_;
@@ -651,8 +729,9 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
     mutable uint64_t nextId_;
 
     uint64_t keepAliveInterval_;
-    uint64_t lastHeard_;
+    mutable uint64_t lastHeard_;
 
+    ::yajr::transport::Transport transport_;
 };
 
 class ActivePeer : public CommunicationPeer {
@@ -820,6 +899,17 @@ class ListeningPeer : public Peer, virtual public ::yajr::Listener {
     virtual void destroy() {
         LOG(DEBUG) << this;
      // Peer::destroy();
+
+        assert(!destroying_);
+        if (destroying_) {
+            LOG(WARNING)
+                << this
+                << " Double destroy() detected"
+            ;
+
+            return;
+        }
+
         destroying_ = 1;
         down();
         if (connected_) {

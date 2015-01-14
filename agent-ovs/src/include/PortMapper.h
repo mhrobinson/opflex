@@ -7,8 +7,8 @@
  */
 
 
-#ifndef _PORTMAPPER_H_
-#define _PORTMAPPER_H_
+#ifndef OVSAGENT_PORTMAPPER_H_
+#define OVSAGENT_PORTMAPPER_H_
 
 #include <string>
 #include <boost/unordered_map.hpp>
@@ -17,8 +17,22 @@
 #include "SwitchConnection.h"
 #include "ovs.h"
 
-namespace opflex {
-namespace enforcer {
+namespace ovsagent {
+
+/**
+ * @brief Abstract base-class for handling port-status change events.
+ */
+class PortStatusListener {
+public:
+    /**
+     * Called when there is a change to a port on the switch.
+     *
+     * @param portName Name of the port that changed
+     * @param portNo Port number of the port that changed
+     */
+    virtual void portStatusUpdate(
+        const std::string& portName, uint32_t portNo) = 0;
+};
 
 /**
  * @brief Class that maps OpenFlow port-names on a switch to the
@@ -43,6 +57,20 @@ public:
      * @throws std::out_of_range if there is no such port known
      */
     virtual const std::string& FindPort(uint32_t of_port_no);
+
+    /**
+     * Register handler for port-status events notifications.
+     *
+     * @param l Listener to register
+     */
+    void registerPortStatusListener(PortStatusListener *l);
+
+    /**
+     * Unregister a previously registered port-status listener.
+     *
+     * @param l Listener to unregister
+     */
+    void unregisterPortStatusListener(PortStatusListener *l);
 
     /**
      * Register all the necessary event listeners on connection.
@@ -76,6 +104,14 @@ private:
      */
     void HandlePortStatus(ofpbuf *msg);
 
+    /**
+     * Notify event listeners about change in status of a port.
+     *
+     * @param portName Name of the port that changed
+     * @param portNo Port number of the port that changed
+     */
+    void notifyListeners(const std::string& portName, uint32_t portNo);
+
     typedef boost::unordered_map<std::string, ofputil_phy_port> PortMap;
     typedef boost::unordered_map<uint32_t, std::string> RPortMap;
     PortMap portMap;
@@ -85,10 +121,12 @@ private:
 
     ovs_be32 lastDescReqXid;
 
+    typedef std::list<PortStatusListener *>  PortStatusList;
+    PortStatusList portStatusListeners;
+
     boost::mutex mapMtx;
 };
 
-}   // namespace enforcer
-}   // namespace opflex
+} // namespace ovsagent
 
-#endif // _PORTMAPPER_H_
+#endif // OVSAGENT_PORTMAPPER_H_

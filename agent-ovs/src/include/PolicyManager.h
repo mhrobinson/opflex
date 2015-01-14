@@ -49,6 +49,24 @@ public:
     ~PolicyManager();
 
     /**
+     * Set the opflex domain for the policy manager
+     *
+     * @param opflexDomain the opflex domain
+     */
+    void setOpflexDomain(const std::string& opflexDomain) {
+        this->opflexDomain = opflexDomain;
+    }
+
+    /**
+     * Get the opflex domain for the policy manager
+     *
+     * @return opflexDomain the opflex domain
+     */
+    const std::string& getOpflexDomain() {
+        return opflexDomain;
+    }
+
+    /**
      * Start the policy manager
      */
     void start();
@@ -149,6 +167,15 @@ public:
     boost::optional<uint32_t> getVnidForGroup(const opflex::modb::URI& eg);
 
     /**
+     * Get the endpoint group associated with the specified identifier
+     *
+     * @param vnid the VNID to look up
+     * @return The endpoint group with that VNID if it is known,
+     * boost::none otherwise
+     */
+    boost::optional<opflex::modb::URI> getGroupForVnid(uint32_t vnid);
+
+    /**
      * Check if an endpoint group exists
      *
      * @param eg the URI for the endpoint group to check
@@ -166,6 +193,13 @@ public:
      * Set of URIs.
      */
     typedef boost::unordered_set<opflex::modb::URI> uri_set_t;
+
+    /**
+     * Get all known endpoint groups.
+     *
+     * @param set of URIs of endpoint groups found.
+     */
+    void getGroups(/* out */ uri_set_t& epgURIs);
 
     /**
      * Get all endpoint groups that provide a contract.
@@ -204,6 +238,7 @@ public:
 
 private:
     opflex::ofcore::OFFramework& framework;
+    std::string opflexDomain;
 
     /**
      * State and indices related to a given endpoint group
@@ -228,13 +263,18 @@ private:
     typedef boost::unordered_map<opflex::modb::URI, GroupState> group_map_t;
     typedef boost::unordered_map<opflex::modb::URI,
                                  boost::unordered_set<opflex::modb::URI> > uri_ref_map_t;
+    typedef boost::unordered_map<uint32_t, opflex::modb::URI> vnid_map_t;
+    typedef boost::unordered_map<opflex::modb::URI, SubnetsCacheEntry> subnet_index_t;
 
     /**
      * A map from EPG URI to its state
      */ 
     group_map_t group_map;
 
-    typedef boost::unordered_map<opflex::modb::URI, SubnetsCacheEntry> subnet_index_t;
+    /**
+     * A map from EPG vnid to EPG URI
+     */
+    vnid_map_t vnid_map;
 
     /**
      * A cache of subnets to subnet child objects
@@ -319,6 +359,23 @@ private:
     friend class ContractListener;
 
     /**
+     * Listener for changes related to plaform config.
+     */
+    class ConfigListener : public opflex::modb::ObjectListener {
+    public:
+        ConfigListener(PolicyManager& pmanager);
+        virtual ~ConfigListener();
+
+        virtual void objectUpdated(opflex::modb::class_id_t class_id,
+                                    const opflex::modb::URI& uri);
+    private:
+        PolicyManager& pmanager;
+    };
+    ConfigListener configListener;
+
+    friend class ConfigListener;
+
+    /**
      * The policy listeners that have been registered
      */
     std::list<PolicyListener*> policyListeners;
@@ -380,16 +437,23 @@ private:
      */
     void notifyContract(const opflex::modb::URI& contractURI);
 
+    /**
+     * Notify policy listeners about an update to the platform
+     * configuration.
+     *
+     * @param configURI the URI of the updated platform config object
+     */
+    void notifyConfig(const opflex::modb::URI& configURI);
 };
 
 /**
- * Comparator for sorting objects in descending order of their
+ * Comparator for sorting objects in ascending order of their
  * "order" member.
  */
 template<typename T>
 struct OrderComparator {
     bool operator()(const T& lhs, const T& rhs) {
-        return lhs->getOrder(0) > rhs->getOrder(0);
+        return lhs->getOrder(UINT32_MAX) < rhs->getOrder(UINT32_MAX);
     }
 };
 

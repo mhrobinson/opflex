@@ -579,6 +579,7 @@
 #include <boost/noncopyable.hpp>
 
 #include "opflex/modb/Mutator.h"
+#include "opflex/ofcore/PeerStatusListener.h"
 
 /**
  * @defgroup cpp C++ Interface
@@ -709,6 +710,18 @@ public:
                           const std::string& file);
 
     /**
+     * Enable SSL for connections to opflex peers
+     *
+     * @param caStorePath the filesystem path to a directory
+     * containing CA certificates, or to a file containing a specific
+     * CA certificate.
+     * @param verifyPeers set to true to verify that peer certificates
+     * properly chain to a trusted root
+     */
+    virtual void enableSSL(const std::string& caStorePath,
+                           bool verifyPeers = true);
+
+    /**
      * Add an OpFlex peer.  If the framework is started, this will
      * immediately initiate a new connection asynchronously.
      *
@@ -726,6 +739,15 @@ public:
      */
     virtual void addPeer(const std::string& hostname,
                          int port);
+
+    /**
+     * Register the given peer status listener to get updates on the
+     * health of the connection pool and on individual connections.
+     * Must be called before calling start() on the framework.
+     *
+     * @param listener the listener to register
+     */
+    virtual void registerPeerStatusListener(PeerStatusListener* listener);
 
 private:
     /**

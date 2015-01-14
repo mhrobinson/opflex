@@ -113,12 +113,16 @@ private:
 
     typedef std::pair<std::string, int> host_t;
     std::set<host_t> opflexPeers;
+    std::string sslMode;
+    std::string sslCaStore;
 
     /**
      * Thread for asynchronous tasks
      */
     boost::thread* io_service_thread;
     boost::asio::io_service agent_io;
+
+    bool started;
 };
 
 } /* namespace ovsagent */

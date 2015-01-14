@@ -20,9 +20,7 @@
 
 using namespace std;
 using namespace boost;
-using namespace opflex::enforcer;
-using namespace opflex::enforcer::flow;
-
+using namespace ovsagent;
 
 class MockExecutorConnection : public SwitchConnection {
 public:
@@ -121,6 +119,7 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
                 &ofpacts, OFPP_MAX, 255);
         fm.ofpacts = ActionBuilder::GetActionsFromBuffer(&ofpacts,
                 fm.ofpacts_len);
+        ofpbuf_uninit(&ofpacts);
         BOOST_CHECK_EQUAL(err, 0);
         BOOST_CHECK(!expectedEdits.edits.empty());
         lastXid = msgHdr->xid;
@@ -136,13 +135,18 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
         BOOST_CHECK(fm.cookie_mask ==
                 (fm.command == OFPFC_ADD ? htonll(0) : ~htonll(0)));
         BOOST_CHECK(match_equal(&ee.match, &fm.match));
-        BOOST_CHECK(ofpacts_equal(ee.ofpacts, ee.ofpacts_len,
-                                  fm.ofpacts, fm.ofpacts_len));
-        ofpbuf_uninit(&ofpacts);
-     } else if (type == OFPTYPE_BARRIER_REQUEST) {
+        if (fm.command == OFPFC_DELETE_STRICT) {
+            BOOST_CHECK_EQUAL(fm.ofpacts_len, 0);
+        } else {
+            BOOST_CHECK(ofpacts_equal(ee.ofpacts, ee.ofpacts_len,
+                                      fm.ofpacts, fm.ofpacts_len));
+        }
+        free((void *)fm.ofpacts);
+    } else if (type == OFPTYPE_BARRIER_REQUEST) {
          BOOST_CHECK(expectedEdits.edits.empty());
 
          if (reconnectReply) {
+             ofpbuf_delete(msg);
              executor->Connected(this);
              return 0;
          }
@@ -152,12 +156,13 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
              msgHdr->xid = lastXid;
              ofpbuf *reply = ofperr_encode_reply(errReply, msgHdr);
              executor->Handle(this, OFPTYPE_ERROR, reply);
-             ofpbuf_uninit(reply);
+             ofpbuf_delete(reply);
          }
          executor->Handle(this, OFPTYPE_BARRIER_REPLY, barrRep);
-         ofpbuf_uninit(barrRep);
-     }
+         ofpbuf_delete(barrRep);
+    }
 
+    ofpbuf_delete(msg);
     return 0;
 }
 

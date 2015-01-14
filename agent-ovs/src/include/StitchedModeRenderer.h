@@ -61,19 +61,20 @@ public:
     virtual void stop();
 
 private:
-    opflex::enforcer::FlowExecutor flowExecutor;
+    FlowExecutor flowExecutor;
     ovsagent::FlowReader flowReader;
-    opflex::enforcer::PortMapper portMapper;
-    opflex::enforcer::FlowManager flowManager;
-    opflex::enforcer::SwitchConnection* connection;
+    PortMapper portMapper;
+    FlowManager flowManager;
+    SwitchConnection* connection;
     StatsManager statsManager;
     TunnelEpManager tunnelEpManager;
 
     std::string ovsBridgeName;
-    opflex::enforcer::FlowManager::EncapType encapType;
+    FlowManager::EncapType encapType;
     std::string encapIface;
     std::string tunnelRemoteIp;
     std::string uplinkIface;
+    uint16_t uplinkVlan;
     bool virtualRouter;
     std::string virtualRouterMac;
     std::string flowIdCache;

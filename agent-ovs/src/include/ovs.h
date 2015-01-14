@@ -8,8 +8,8 @@
 
 /* Convenience include file that includes actual libopenvswitch headers */
 
-#ifndef OVS_H_
-#define OVS_H_
+#ifndef OVSAGENT_OVS_H_
+#define OVSAGENT_OVS_H_
 
 #include <boost/static_assert.hpp>
 #include <boost/shared_ptr.hpp>
@@ -23,9 +23,9 @@
 extern "C" {
 #endif
 
-#include <openvswitch/lib/vlog.h>
+#include <openvswitch/vlog.h>
 #include <openvswitch/lib/dirs.h>
-#include <openvswitch/lib/vconn.h>
+#include <openvswitch/vconn.h>
 #include <openvswitch/lib/ofpbuf.h>
 #include <openvswitch/lib/ofp-msgs.h>
 #include <openvswitch/lib/flow.h>
@@ -36,6 +36,10 @@ extern "C" {
 #include <openvswitch/lib/poll-loop.h>
 #include <openvswitch/lib/ofp-print.h>
 #include <openvswitch/lib/dynamic-string.h>
+#include <openvswitch/list.h>
+#include <openvswitch/lib/json.h>
+#include <openvswitch/lib/jsonrpc.h>
+#include <openvswitch/lib/stream.h>
 
 #ifdef __cplusplus
 }
@@ -45,4 +49,4 @@ extern "C" {
 #pragma GCC diagnostic pop
 #endif
 
-#endif /* OVS_H_ */
+#endif /* OVSAGENT_OVS_H_ */

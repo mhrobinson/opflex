@@ -76,6 +76,9 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
         policy::Universe::resolve(framework).get();
 
     Mutator mutator(framework, "policyreg");
+    universe->addPlatformConfig("c7820284-fa76-44d5-948c-9de464f1c047")
+        ->setMulticastGroupIP("224.1.1.1");
+
     space = universe->addPolicySpace("test");
     fd1 = space->addGbpFloodDomain("fd");
     fd2 = space->addGbpFloodDomain("fd2");
@@ -97,8 +100,7 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
         .setVirtualRouterIp("10.0.0.128");
     subnetsfd1_2 = subnetsfd1->addGbpSubnet("subnetsfd1_2");
     subnetsfd1_2->setAddress("fd8f:69d8:c12c:ca62::")
-        .setPrefixLen(64)
-        .setVirtualRouterIp("fd8f:69d8:c12c:ca62::1");
+        .setPrefixLen(64);
     subnetsfd1->addGbpSubnetsToNetworkRSrc()
         ->setTargetFloodDomain(fd1->getURI());
 
@@ -109,8 +111,7 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
         .setVirtualRouterIp("10.0.1.128");
     subnetsfd2_2 = subnetsfd2->addGbpSubnet("subnetsfd2_2");
     subnetsfd2_2->setAddress("fd8c:ad36:ceb3:601f::")
-        .setPrefixLen(64)
-        .setVirtualRouterIp("fd8c:ad36:ceb3:601f::1");
+        .setPrefixLen(64);
     subnetsfd2->addGbpSubnetsToNetworkRSrc()
         ->setTargetFloodDomain(fd2->getURI());
     
@@ -169,7 +170,7 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
     eg1 = space->addGbpEpGroup("group1");
     eg1->addGbpEpGroupToNetworkRSrc()
         ->setTargetSubnets(subnetsfd1->getURI());
-    eg1->addGbpeInstContext()->setVnid(1234);
+    eg1->addGbpeInstContext()->setEncapId(1234);
     eg1->addGbpEpGroupToProvContractRSrc(con1->getURI().toString());
     eg1->addGbpEpGroupToConsContractRSrc(con1->getURI().toString());
     eg1->addGbpEpGroupToProvContractRSrc(con2->getURI().toString());
@@ -177,7 +178,7 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
     eg2 = space->addGbpEpGroup("group2");
     eg2->addGbpEpGroupToNetworkRSrc()
         ->setTargetSubnets(subnetsfd1->getURI());
-    eg2->addGbpeInstContext()->setVnid(3000);
+    eg2->addGbpeInstContext()->setEncapId(3000);
     eg2->addGbpEpGroupToProvContractRSrc(con1->getURI().toString());
     eg2->addGbpEpGroupToConsContractRSrc(con1->getURI().toString());
     eg2->addGbpEpGroupToConsContractRSrc(con2->getURI().toString());
@@ -187,7 +188,7 @@ void Policies::writeTestPolicy(opflex::ofcore::OFFramework& framework) {
     eg3->addGbpEpGroupToConsContractRSrc(con1->getURI().toString());
     eg3->addGbpEpGroupToNetworkRSrc()
         ->setTargetSubnets(subnetsfd2->getURI());
-    eg3->addGbpeInstContext()->setVnid(3456);
+    eg3->addGbpeInstContext()->setEncapId(3456);
 
     mutator.commit();
 }

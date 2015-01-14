@@ -14,8 +14,12 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #endif
+#include <fstream>
+#include <cerrno>
 
 #include <opflex/modb/Mutator.h>
+#include <opflex/modb/MAC.h>
+#include <modelgbp/gbpe/EncapTypeEnumT.hpp>
 #include <boost/foreach.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -45,9 +49,15 @@ using boost::system::error_code;
 TunnelEpManager::TunnelEpManager(Agent* agent_, long timer_interval_)
     : agent(agent_), 
       agent_io(agent_->getAgentIOService()), 
-      timer_interval(timer_interval_), stopping(false),
-      tunnelEpUUID(to_string(random_generator()())) {
+      timer_interval(timer_interval_), stopping(false), uplinkVlan(0) {
 
+    boost::uuids::uuid tuuid;
+    std::ifstream rndfile("/dev/urandom", std::ifstream::binary);
+    if (!rndfile.is_open() ||
+        !rndfile.read((char *)&tuuid, tuuid.size()).good()) {
+        tuuid = random_generator()();       // use boost RNG as fallback
+    }
+    tunnelEpUUID = to_string(tuuid);
 }
 
 TunnelEpManager::~TunnelEpManager() {
@@ -90,6 +100,32 @@ const std::string& TunnelEpManager::getTerminationIp(const std::string& uuid) {
     return terminationIp;
 }
 
+#ifdef HAVE_IFADDRS_H
+static string getInterfaceMac(const string& iface) {
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock == -1) {
+        int err = errno;
+        LOG(ERROR) << "Socket creation failed when getting MAC address of "
+            << iface << ", error: " << strerror(err);
+        return "";
+    }
+
+    ifreq ifReq;
+    strncpy(ifReq.ifr_name, iface.c_str(), sizeof(ifReq.ifr_name));
+    if (ioctl(sock, SIOCGIFHWADDR, &ifReq) != -1) {
+        close(sock);
+        return
+            opflex::modb::MAC((uint8_t*)(ifReq.ifr_hwaddr.sa_data)).toString();
+    } else {
+        int err = errno;
+        close(sock);
+        LOG(ERROR) << "ioctl to get MAC address failed for " << iface
+            << ", error: " << strerror(err);
+        return "";
+    }
+}
+#endif
+
 void TunnelEpManager::on_timer(const error_code& ec) {
     if (ec) {
         // shut down the timer when we get a cancellation
@@ -97,8 +133,9 @@ void TunnelEpManager::on_timer(const error_code& ec) {
         return;
     }
 
-    std::string bestAddress;
-    std::string bestIface;
+    string bestAddress;
+    string bestIface;
+    string bestMac;
 
 #ifdef HAVE_IFADDRS_H
     // This is linux-specific.  Other plaforms will require their own
@@ -140,8 +177,13 @@ void TunnelEpManager::on_timer(const error_code& ec) {
                 LOG(ERROR) << "getnameinfo() failed: " << gai_strerror(s);
                 continue;
             }
-
             bestAddress = host;
+            // remove address scope if present
+            size_t scope = bestAddress.find_first_of('%');
+            if (scope != string::npos) {
+                bestAddress.erase(scope);
+            }
+
             bestIface = ifa->ifa_name;
             if (family == AF_INET) {
                 // prefer ipv4 address, if present
@@ -150,25 +192,38 @@ void TunnelEpManager::on_timer(const error_code& ec) {
         }
     }
 
+    if (!bestAddress.empty()) {
+        bestMac = getInterfaceMac(bestIface);
+    }
+
     freeifaddrs(ifaddr);
 #endif
 
-    if (bestAddress != "" && bestAddress != terminationIp) {
+    if ((!bestAddress.empty() && bestAddress != terminationIp) ||
+        (!bestMac.empty() && bestMac != terminationMac)) {
         {
             unique_lock<mutex> guard(termip_mutex);
             terminationIp = bestAddress;
+            terminationMac = bestMac;
         }
 
-        LOG(INFO) << "Discovered uplink IP address " << bestAddress 
-                  << " on " << bestIface;
+        LOG(INFO) << "Discovered uplink IP: " << bestAddress
+                  << ", MAC: " << bestMac
+                  << " on interface: " << bestIface;
 
         using namespace modelgbp::gbpe;
         Mutator mutator(agent->getFramework(), "policyelement");
         optional<shared_ptr<TunnelEpUniverse> > tu = 
             TunnelEpUniverse::resolve(agent->getFramework());
         if (tu) {
-            tu.get()->addGbpeTunnelEp(tunnelEpUUID)
-                ->setTerminatorIp(bestAddress);
+            shared_ptr<TunnelEp> tunnelEp = 
+                tu.get()->addGbpeTunnelEp(tunnelEpUUID);
+            tunnelEp->setTerminatorIp(bestAddress)
+                .setMac(opflex::modb::MAC(bestMac));
+            if (uplinkVlan != 0) {
+                tunnelEp->setEncapType(EncapTypeEnumT::CONST_VLAN)
+                    .setEncapId(uplinkVlan);
+            }
         }
 
         mutator.commit();

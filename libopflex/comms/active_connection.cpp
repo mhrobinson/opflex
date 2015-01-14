@@ -167,17 +167,13 @@ void on_active_connection(uv_connect_t *req, int status) {
     peer->ai_next = NULL;
 #endif
 
-    peer->unlink();
-    peer->insert(internal::Peer::LoopData::ONLINE);
-
-    peer->unchoke();
-
-    if ((rc = uv_read_start(req->handle, alloc_cb, on_read))) {
-        LOG(WARNING) << "uv_read_start: [" << uv_err_name(rc) << "] " <<
-                    uv_strerror(rc);
-        uv_close((uv_handle_t*)req->handle, on_close);
+    if (peer->unchoke()) {
+        retry_later(peer);
         return;
     }
+
+    peer->unlink();
+    peer->insert(internal::Peer::LoopData::ONLINE);
 
     /* kick the ball */
     peer->onConnect();

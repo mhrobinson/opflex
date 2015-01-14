@@ -19,9 +19,6 @@
 
 using namespace std;
 using namespace boost;
-using namespace opflex::enforcer;
-using namespace opflex::enforcer::flow;
-using namespace ovsagent;
 
 typedef lock_guard<mutex> mutex_guard;
 
@@ -145,10 +142,13 @@ void FlowReader::decodeReply(ofpbuf *msg, FlowEntryList& recvFlows,
                 entry->entry->ofpacts_len);
         ofpbuf_uninit(&actsBuf);
 
-        /* HACK: override the "raw" field so that our comparisons work properly */
+        /* HACK: override the "raw" field so that our comparisons work properly
+         * XXX TODO See if ActionBuilder can construct actions with proper "raw" type
+         */
         ofpact *act;
         OFPACT_FOR_EACH(act, entry->entry->ofpacts, entry->entry->ofpacts_len) {
-            if (act->type == OFPACT_OUTPUT_REG) {
+            switch (act->type) {
+            case OFPACT_OUTPUT_REG: case OFPACT_REG_MOVE:
                 act->raw = (uint8_t)(-1);
             }
         }
@@ -176,11 +176,13 @@ void FlowReader::decodeReply(ofpbuf *msg, GroupEdit::EntryList& recv,
         ofputil_group_desc gd;
         int ret = ofputil_decode_group_desc_reply(&gd, msg, ver);
         if (ret != 0) {
-            if (ret != EOF) {
+            if (ret == EOF) {
+                replyDone = !ofpmp_more((ofp_header*)msg->frame);
+            } else {
                 LOG(ERROR) << "Failed to decode group desc reply: "
                     << ovs_strerror(ret);
+                replyDone = true;
             }
-            replyDone = true;
             break;
         }
 

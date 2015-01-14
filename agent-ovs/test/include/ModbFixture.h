@@ -1,3 +1,4 @@
+/* -*- C++ -*-; c-basic-offset: 4; indent-tabs-mode: nil */
 /*
  * Copyright (c) 2014 Cisco Systems, Inc. and others.  All rights reserved.
  *
@@ -7,14 +8,15 @@
  */
 
 
-#ifndef MODBFIXTURE_H_
-#define MODBFIXTURE_H_
+#ifndef OVSAGENT_TEST_MODBFIXTURE_H_
+#define OVSAGENT_TEST_MODBFIXTURE_H_
 
 #include <boost/shared_ptr.hpp>
 #include <modelgbp/dmtree/Root.hpp>
 #include <modelgbp/l2/EtherTypeEnumT.hpp>
 #include <modelgbp/gbp/DirectionEnumT.hpp>
 #include <modelgbp/gbp/UnknownFloodModeEnumT.hpp>
+#include <modelgbp/gbp/ConnTrackEnumT.hpp>
 #include <opflex/modb/Mutator.h>
 
 #include "BaseFixture.h"
@@ -27,6 +29,7 @@ using namespace ovsagent;
 using namespace modelgbp;
 using namespace modelgbp::gbp;
 using namespace modelgbp::gbpe;
+using namespace modelgbp::platform;
 using namespace opflex::modb;
 
 class DummyEpSrc : public EndpointSource {
@@ -58,7 +61,8 @@ public:
     shared_ptr<RoutingDomain> rd0;
     shared_ptr<BridgeDomain> bd0;
     shared_ptr<Subnets> subnetsfd0, subnetsfd1, subnetsbd0, subnetsrd0;
-    shared_ptr<Subnet> subnetsfd0_1, subnetsfd1_1, subnetsbd0_1, subnetsrd0_1;
+    shared_ptr<Subnet> subnetsfd0_1, subnetsfd0_2, subnetsfd1_1,
+        subnetsbd0_1, subnetsrd0_1;
 
     shared_ptr<L24Classifier> classifier0;
     shared_ptr<L24Classifier> classifier1;
@@ -78,6 +82,9 @@ protected:
         universe = policy::Universe::resolve(framework).get();
 
         Mutator mutator(framework, policyOwner);
+        shared_ptr<Config> config = universe->addPlatformConfig("default");
+        config->setMulticastGroupIP("224.1.1.1");
+
         space = universe->addPolicySpace("tenant0");
         fd0 = space->addGbpFloodDomain("fd0");
         fd1 = space->addGbpFloodDomain("fd1");
@@ -97,6 +104,9 @@ protected:
         subnetsfd0_1->setAddress("10.20.44.0")
             .setPrefixLen(24)
             .setVirtualRouterIp("10.20.44.1");
+        subnetsfd0_2 = subnetsfd0->addGbpSubnet("subnetsfd0_2");
+        subnetsfd0_2->setAddress("2001:db8::")
+            .setPrefixLen(32);
         subnetsfd0->addGbpSubnetsToNetworkRSrc()
             ->setTargetFloodDomain(fd0->getURI());
 
@@ -110,9 +120,6 @@ protected:
 
         subnetsbd0 = space->addGbpSubnets("subnetsbd0");
         subnetsbd0_1 = subnetsbd0->addGbpSubnet("subnetsbd0_1");
-        subnetsbd0_1->setAddress("2001:db8::")
-            .setPrefixLen(32)
-            .setVirtualRouterIp("2001:db8::1");
         subnetsbd0->addGbpSubnetsToNetworkRSrc()
             ->setTargetBridgeDomain(bd0->getURI());
 
@@ -124,25 +131,25 @@ protected:
         epg0 = space->addGbpEpGroup("epg0");
         epg0->addGbpEpGroupToNetworkRSrc()
             ->setTargetSubnets(subnetsbd0->getURI());
-        epg0->addGbpeInstContext()->setVnid(0xA0A);
+        epg0->addGbpeInstContext()->setEncapId(0xA0A);
 
         epg1 = space->addGbpEpGroup("epg1");
         epg1->addGbpEpGroupToNetworkRSrc()
             ->setTargetSubnets(subnetsrd0->getURI());
-        epg1->addGbpeInstContext()->setVnid(0xA0B);
+        epg1->addGbpeInstContext()->setEncapId(0xA0B);
 
         epg2 = space->addGbpEpGroup("epg2");
         epg2->addGbpEpGroupToNetworkRSrc()
             ->setTargetSubnets(subnetsfd0->getURI());
-        epg2->addGbpeInstContext()->setVnid(0xD0A);
+        epg2->addGbpeInstContext()->setEncapId(0xD0A);
 
         epg3 = space->addGbpEpGroup("epg3");
         epg3->addGbpEpGroupToNetworkRSrc()
             ->setTargetSubnets(subnetsfd1->getURI());
-        epg3->addGbpeInstContext()->setVnid(0xD0B);
+        epg3->addGbpeInstContext()->setEncapId(0xD0B);
 
         epg4 = space->addGbpEpGroup("epg4");
-        epg4->addGbpeInstContext()->setVnid(0xE0E);
+        epg4->addGbpeInstContext()->setEncapId(0xE0E);
         epg4->addGbpEpGroupToNetworkRSrc()
             ->setTargetRoutingDomain(rd0->getURI());
 
@@ -195,12 +202,13 @@ protected:
 
         /* allow TCP to dst port 80 cons->prov */
         classifier1 = space->addGbpeL24Classifier("classifier1");
-        classifier1->setOrder(200).setDirection(DirectionEnumT::CONST_IN)
+        classifier1->setOrder(100).setDirection(DirectionEnumT::CONST_IN)
             .setEtherT(l2::EtherTypeEnumT::CONST_IPV4).setProt(6 /* TCP */)
-            .setDFromPort(80);
+            .setDFromPort(80)
+            .setConnectionTracking(ConnTrackEnumT::CONST_REFLEXIVE);
         /* allow ARP from prov->cons */
         classifier2 = space->addGbpeL24Classifier("classifier2");
-        classifier2->setOrder(100).setDirection(DirectionEnumT::CONST_OUT)
+        classifier2->setOrder(200).setDirection(DirectionEnumT::CONST_OUT)
             .setEtherT(l2::EtherTypeEnumT::CONST_ARP);
 
         con1 = space->addGbpContract("contract1");
@@ -224,12 +232,12 @@ protected:
 
         /* classifiers with port ranges */
         classifier3 = space->addGbpeL24Classifier("classifier3");
-        classifier3->setOrder(200).setDirection(DirectionEnumT::CONST_IN)
+        classifier3->setOrder(10).setDirection(DirectionEnumT::CONST_IN)
             .setEtherT(l2::EtherTypeEnumT::CONST_IPV4).setProt(6 /* TCP */)
             .setDFromPort(80).setDToPort(85);
 
         classifier4 = space->addGbpeL24Classifier("classifier4");
-        classifier4->setOrder(100).setDirection(DirectionEnumT::CONST_IN)
+        classifier4->setOrder(20).setDirection(DirectionEnumT::CONST_IN)
             .setEtherT(l2::EtherTypeEnumT::CONST_IPV4).setProt(6 /* TCP */)
             .setSFromPort(66).setSToPort(69)
             .setDFromPort(94).setDToPort(95);
@@ -244,4 +252,4 @@ protected:
     }
 };
 
-#endif /* MODBFIXTURE_H_ */
+#endif /* OVSAGENT_TEST_MODBFIXTURE_H_ */

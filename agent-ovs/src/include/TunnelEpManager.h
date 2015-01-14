@@ -65,6 +65,15 @@ public:
     }
 
     /**
+     * Set the VLAN tag set on the uplink interface
+     *
+     * @param uplinkVlan the vlan tag used on the uplink interface
+     */
+    void setUplinkVlan(uint16_t uplinkVlan) { 
+        this->uplinkVlan = uplinkVlan;
+    }
+
+    /**
      * Get the tunnel termination IP address for the tunnel endpoint
      * with the given uuid
      *
@@ -108,6 +117,11 @@ private:
     std::string uplinkIface;
 
     /**
+     * The VLAN tag for the uplink; 0 for no vlan
+     */
+    uint16_t uplinkVlan;
+
+    /**
      * The uuid of the tunnel termination endpoint
      */
     std::string tunnelEpUUID;
@@ -117,6 +131,12 @@ private:
      * system.
      */
     std::string terminationIp;
+
+    /**
+     * The tunnel termination MAC address as discovered from the local
+     * system.
+     */
+    std::string terminationMac;
     boost::mutex termip_mutex;
 
     /**

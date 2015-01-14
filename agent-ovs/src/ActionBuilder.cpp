@@ -14,9 +14,7 @@
 
 extern const struct mf_field mf_fields[MFF_N_IDS];
 
-namespace opflex {
-namespace enforcer {
-namespace flow {
+namespace ovsagent {
 
 ActionBuilder::ActionBuilder() {
     ofpbuf_init(&buf, 64);
@@ -155,9 +153,9 @@ ActionBuilder::SetGroup(uint32_t groupId) {
 }
 
 void
-ActionBuilder::SetController() {
+ActionBuilder::SetController(uint16_t max_len) {
     struct ofpact_controller *contr = ofpact_put_CONTROLLER(&buf);
-    contr->max_len = 128;
+    contr->max_len = max_len;
     contr->controller_id = 0;
     contr->reason = OFPR_ACTION;
 }
@@ -167,10 +165,14 @@ ActionBuilder::SetPushVlan() {
     ofpact_put_PUSH_VLAN(&buf);
 }
 
+void
+ActionBuilder::SetConntrack(uint16_t zone, uint16_t flags) {
+    ofpact_conntrack *ct = ofpact_put_CT(&buf);
+    ct->flags = flags;
+    ct->zone = zone;
+}
 
-}   // namespace flow
-}   // namespace enforcer
-}   // namespace opflex
+} // namespace ovsagent
 
 
 

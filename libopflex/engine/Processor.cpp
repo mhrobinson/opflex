@@ -14,7 +14,6 @@
 #include <limits>
 
 #include <boost/foreach.hpp>
-
 #include "opflex/engine/internal/OpflexPEHandler.h"
 #include "opflex/engine/internal/ProcessorMessage.h"
 #include "opflex/engine/Processor.h"
@@ -543,9 +542,19 @@ void Processor::setOpflexIdentity(const std::string& name,
     pool.setOpflexIdentity(name, domain);
 }
 
+void Processor::enableSSL(const std::string& caStorePath,
+                          bool verifyPeers) {
+    pool.enableSSL(caStorePath, verifyPeers);
+}
+
 void Processor::addPeer(const std::string& hostname,
                         int port) {
     pool.addPeer(hostname, port);
+}
+
+void
+Processor::registerPeerStatusListener(ofcore::PeerStatusListener* listener) {
+    pool.registerPeerStatusListener(listener);
 }
 
 OpflexHandler* Processor::newHandler(OpflexConnection* conn) {

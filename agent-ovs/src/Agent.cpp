@@ -14,6 +14,7 @@
 #include <boost/assign/list_of.hpp>
 #include <modelgbp/dmtree/Root.hpp>
 
+#include "cmd.h"
 #include "Agent.h"
 #include "FSEndpointSource.h"
 #include "logging.h"
@@ -31,11 +32,13 @@ using std::make_pair;
 
 Agent::Agent(OFFramework& framework_) 
     : framework(framework_), policyManager(framework), 
-      endpointManager(framework, policyManager) {
+      endpointManager(framework, policyManager), 
+      io_service_thread(NULL), started(false) {
 
 }
 
 Agent::~Agent() {
+    stop();
     BOOST_FOREACH(Renderer* r, renderers) {
         delete r;
     }
@@ -43,10 +46,13 @@ Agent::~Agent() {
 }
 
 void Agent::setProperties(const boost::property_tree::ptree& properties) {
+    static const std::string LOG_LEVEL("log.level");
     // A list of filesystem paths that we should check for endpoint
     // information
     static const std::string ENDPOINT_SOURCE_PATH("endpoint-sources.filesystem");
     static const std::string OPFLEX_PEERS("opflex.peers");
+    static const std::string OPFLEX_SSL_MODE("opflex.ssl.mode");
+    static const std::string OPFLEX_SSL_CA_STORE("opflex.ssl.ca-store");
     static const std::string HOSTNAME("hostname");
     static const std::string PORT("port");
 
@@ -54,6 +60,12 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
     static const std::string OPFLEX_DOMAIN("opflex.domain");
 
     static const std::string RENDERERS_STITCHED_MODE("renderers.stitched-mode");
+
+    optional<std::string> logLvl =
+        properties.get_optional<std::string>(LOG_LEVEL);
+    if (logLvl) {
+        setLoggingLevel(logLvl.get());
+    }
 
     optional<const ptree&> endpointSource = 
         properties.get_child_optional(ENDPOINT_SOURCE_PATH);
@@ -75,6 +87,7 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
     } else {
         framework.setOpflexIdentity(opflexName.get(),
                                     opflexDomain.get());
+        policyManager.setOpflexDomain(opflexDomain.get());
     }
 
     optional<const ptree&> peers = 
@@ -92,6 +105,15 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
             }
         }
     }
+
+    sslMode = properties.get<std::string>(OPFLEX_SSL_MODE, "disabled");
+    sslCaStore = properties.get<std::string>(OPFLEX_SSL_CA_STORE,
+                                             "/etc/ssl/certs/");
+    if (sslMode != "disabled") {
+        bool verifyPeers = sslMode != "encrypted";
+        framework.enableSSL(sslCaStore, verifyPeers);
+    }
+
     typedef Renderer* (*rend_create)(Agent&);
     typedef boost::unordered_map<std::string, rend_create> rend_map_t;
     static rend_map_t rend_map =
@@ -111,6 +133,8 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
 
 void Agent::start() {
     LOG(INFO) << "Starting OVS Agent";
+    started = true;
+
     // instantiate the opflex framework
     framework.setModel(modelgbp::getMetadata());
     framework.start();
@@ -127,9 +151,6 @@ void Agent::start() {
     root->addObserverEpStatUniverse();
     mutator.commit();
 
-    BOOST_FOREACH(const host_t& h, opflexPeers)
-        framework.addPeer(h.first, h.second);
-
     // instantiate other components
     policyManager.start();
     endpointManager.start();
@@ -144,9 +165,13 @@ void Agent::start() {
     }
 
     io_service_thread = new boost::thread(boost::ref(*this));
+
+    BOOST_FOREACH(const host_t& h, opflexPeers)
+        framework.addPeer(h.first, h.second);
 }
 
 void Agent::stop() {
+    if (!started) return;
     LOG(INFO) << "Stopping OVS Agent";
 
     BOOST_FOREACH(Renderer* r, renderers) {
@@ -162,8 +187,12 @@ void Agent::stop() {
     policyManager.stop();
     framework.stop();
 
-    io_service_thread->join();
-    delete io_service_thread;
+    if (io_service_thread) {
+        io_service_thread->join();
+        delete io_service_thread;
+    }
+
+    started = false;
 }
 
 void Agent::operator()() {

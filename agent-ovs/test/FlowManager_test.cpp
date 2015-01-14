@@ -28,8 +28,6 @@
 
 using namespace std;
 using namespace boost::assign;
-using namespace opflex::enforcer;
-using namespace opflex::enforcer::flow;
 using namespace opflex::modb;
 using namespace modelgbp::gbp;
 using namespace ovsagent;
@@ -185,7 +183,7 @@ public:
                         flowManager(agent),
                         policyMgr(agent.getPolicyManager()),
                            ep2_port(11), ep4_port(22) {
-        string tunIf("br0_vxlan0");
+        tunIf = "br0_vxlan0";
         flowManager.SetExecutor(&exec);
         flowManager.SetPortMapper(&portmapper);
         flowManager.SetEncapIface(tunIf);
@@ -195,6 +193,7 @@ public:
 
         portmapper.ports[ep0->getInterfaceName().get()] = 80;
         portmapper.ports[tunIf] = 2048;
+        tun_port_new = 4096;
 
         WAIT_FOR(policyMgr.groupExists(epg0->getURI()), 500);
         WAIT_FOR(policyMgr.getBDForGroup(epg0->getURI()) != boost::none, 500);
@@ -231,9 +230,11 @@ public:
     void localEpTest();
     void remoteEpTest();
     void fdTest();
+    void groupFloodTest();
     void policyTest();
     void policyPortRangeTest();
     void connectTest();
+    void portStatusTest();
 
     MockFlowExecutor exec;
     MockFlowReader reader;
@@ -241,6 +242,7 @@ public:
     MockPortMapper portmapper;
     PolicyManager& policyMgr;
 
+    string tunIf;
     vector<string> fe_fixed;
     vector<string> fe_fallback;
     vector<string> fe_epg0, fe_epg0_fd0, fe_epg0_routers;
@@ -250,13 +252,19 @@ public:
     vector<string> fe_ep2, fe_ep2_eg1;
     vector<string> fe_con1, fe_con2, fe_con3;
     vector<string> fe_arpopt;
+    vector<string> fe_fixed_tun_new, fe_fallback_tun_new;
+    vector<string> fe_epg0_tun_new, fe_ep2_tun_new;
+    vector<string> fe_rd0;
     string fe_connect_1, fe_connect_2;
     string ge_fd0, ge_bkt_ep0, ge_bkt_ep2, ge_bkt_tun;
     string ge_fd0_prom;
     string ge_fd1, ge_bkt_ep4;
     string ge_fd1_prom;
+    string ge_bkt_tun_new;
+    string ge_epg0, ge_epg0_prom, ge_epg2, ge_epg2_prom;
     uint32_t ep2_port;
     uint32_t ep4_port;
+    uint32_t tun_port_new;
 };
 
 class VxlanFlowManagerFixture : public FlowManagerFixture {
@@ -280,16 +288,19 @@ public:
 void FlowManagerFixture::epgTest() {
     setConnected();
 
+    LOG(INFO) << "epg: create";
     /* create */
     exec.Clear();
     exec.Expect(FlowEdit::add, fe_fixed);
     exec.Expect(FlowEdit::add, fe_fallback);
     exec.Expect(FlowEdit::add, fe_epg0);
+    exec.Expect(FlowEdit::add, fe_rd0);
     exec.Expect(FlowEdit::add, fe_ep0);
     exec.Expect(FlowEdit::add, fe_ep2);
     flowManager.egDomainUpdated(epg0->getURI());
     WAIT_FOR(exec.IsEmpty(), 500);
 
+    LOG(INFO) << "epg: forwarding object change";
     /* forwarding object change */
     Mutator m1(framework, policyOwner);
     epg0->addGbpEpGroupToNetworkRSrc()
@@ -308,6 +319,7 @@ void FlowManagerFixture::epgTest() {
     WAIT_FOR(exec.IsEmpty(), 500);
     BOOST_CHECK(exec.IsGroupEmpty());
 
+    LOG(INFO) << "epg: change arp mode";
     /* change arp mode */
     fd0->setArpMode(AddressResModeEnumT::CONST_FLOOD)
         .setNeighborDiscMode(AddressResModeEnumT::CONST_FLOOD);
@@ -322,7 +334,7 @@ void FlowManagerFixture::epgTest() {
     WAIT_FOR(exec.IsEmpty(), 500);
     BOOST_CHECK(exec.IsGroupEmpty());
 
-    LOG(INFO) << "epg: Removing";
+    LOG(INFO) << "epg: remove";
     /* remove */
     Mutator m2(framework, policyOwner);
     epg0->remove();
@@ -385,7 +397,7 @@ void FlowManagerFixture::localEpTest() {
         exec.Expect(FlowEdit::del, fe_ep0[i]);
     }
     exec.Expect(FlowEdit::mod, fe_ep0_port_3);
-    flowManager.endpointUpdated(ep0->getUUID());
+    flowManager.portStatusUpdate(ep0->getInterfaceName().get(), 180);
     WAIT_FOR(exec.IsEmpty(), 500);
 
     /* remove endpoint */
@@ -486,6 +498,13 @@ void FlowManagerFixture::fdTest() {
     exec.ExpectGroup(FlowEdit::add, ge_fd1_prom + ge_bkt_ep4 + ge_bkt_tun);
     flowManager.endpointUpdated(ep4->getUUID());
     WAIT_FOR(exec.IsGroupEmpty(), 500);
+
+    /* group changes on tunnel port change */
+    exec.ExpectGroup(FlowEdit::mod, ge_fd1 + ge_bkt_ep4 + ge_bkt_tun_new);
+    exec.ExpectGroup(FlowEdit::mod, ge_fd1_prom + ge_bkt_ep4 + ge_bkt_tun_new);
+    portmapper.ports[tunIf] = tun_port_new;
+    flowManager.portStatusUpdate(tunIf, tun_port_new);
+    WAIT_FOR(exec.IsGroupEmpty(), 500);
 }
 
 BOOST_FIXTURE_TEST_CASE(fd_vxlan, VxlanFlowManagerFixture) {
@@ -494,6 +513,59 @@ BOOST_FIXTURE_TEST_CASE(fd_vxlan, VxlanFlowManagerFixture) {
 
 BOOST_FIXTURE_TEST_CASE(fd_vlan, VlanFlowManagerFixture) {
     fdTest();
+}
+
+void FlowManagerFixture::groupFloodTest() {
+    flowManager.SetFloodScope(FlowManager::ENDPOINT_GROUP);
+    setConnected();
+
+    /* "create" local endpoints ep0 and ep2 */
+    exec.IgnoreFlowMods(fe_ep0.size() + 7);
+    portmapper.ports[ep2->getInterfaceName().get()] = ep2_port;
+    flowManager.endpointUpdated(ep0->getUUID());
+    flowManager.endpointUpdated(ep2->getUUID());
+    WAIT_FOR(exec.IsEmpty(), 500);
+
+    /* Move ep2 to epg2, add epg0 to fd0. Now fd0 has 2 epgs */
+    ep2->setEgURI(epg2->getURI());
+    epSrc.updateEndpoint(*ep2);
+    Mutator m1(framework, policyOwner);
+    epg0->addGbpEpGroupToNetworkRSrc()
+            ->setTargetSubnets(subnetsfd0->getURI());
+    m1.commit();
+    WAIT_FOR(policyMgr.getFDForGroup(epg0->getURI()) != boost::none, 500);
+    WAIT_FOR(policyMgr.getFDForGroup(epg2->getURI()) != boost::none, 500);
+    exec.Clear();
+    exec.Expect(FlowEdit::mod, fe_ep0_fd0_1);
+    exec.Expect(FlowEdit::add, fe_ep0_fd0_2);
+    exec.ExpectGroup(FlowEdit::add, ge_epg0 + ge_bkt_ep0 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::add, ge_epg0_prom + ge_bkt_tun);
+    flowManager.endpointUpdated(ep0->getUUID());
+    WAIT_FOR(exec.IsEmpty(), 500);
+    BOOST_CHECK(exec.IsGroupEmpty());
+
+    exec.IgnoreFlowMods();
+    exec.Clear();
+    exec.ExpectGroup(FlowEdit::add, ge_epg2 + ge_bkt_ep2 + ge_bkt_tun);
+    exec.ExpectGroup(FlowEdit::add, ge_epg2_prom + ge_bkt_tun);
+    flowManager.endpointUpdated(ep2->getUUID());
+    WAIT_FOR(exec.IsGroupEmpty(), 500);
+
+    /* remove ep0 */
+    epSrc.removeEndpoint(ep0->getUUID());
+    exec.Clear();
+    exec.ExpectGroup(FlowEdit::del, ge_epg0);
+    exec.ExpectGroup(FlowEdit::del, ge_epg0_prom);
+    flowManager.endpointUpdated(ep0->getUUID());
+    WAIT_FOR(exec.IsGroupEmpty(), 500);
+}
+
+BOOST_FIXTURE_TEST_CASE(group_flood_vxlan, VxlanFlowManagerFixture) {
+    groupFloodTest();
+}
+
+BOOST_FIXTURE_TEST_CASE(group_flood_vlan, VlanFlowManagerFixture) {
+    groupFloodTest();
 }
 
 void FlowManagerFixture::policyTest() {
@@ -548,6 +620,7 @@ void FlowManagerFixture::connectTest() {
 
     exec.Expect(FlowEdit::add, fe_fixed);
     exec.Expect(FlowEdit::del, fe_connect_1);
+    exec.Expect(FlowEdit::add, fe_rd0);
     exec.Expect(FlowEdit::add, fe_fallback);
     exec.Expect(FlowEdit::mod, fe_connect_2);
     exec.ExpectGroup(FlowEdit::del, "group_id=10,type=all");
@@ -565,6 +638,61 @@ BOOST_FIXTURE_TEST_CASE(connect_vxlan, VxlanFlowManagerFixture) {
 BOOST_FIXTURE_TEST_CASE(connect_vlan, VlanFlowManagerFixture) {
     createOnConnectEntries(FlowManager::ENCAP_VLAN, reader.flows, reader.groups);
     connectTest();
+}
+
+void FlowManagerFixture::portStatusTest() {
+    setConnected();
+
+    /* create entries for epg0, ep0 and ep2 with original tunnel port */
+    exec.Clear();
+    exec.IgnoreFlowMods(fe_fixed.size() + fe_fallback.size()
+            + fe_epg0.size() + fe_ep0.size() + fe_ep2.size());
+    flowManager.egDomainUpdated(epg0->getURI());
+    WAIT_FOR(exec.IsEmpty(), 500);
+
+    /* delete all groups except epg0, then update tunnel port */
+    exec.IgnoreFlowMods();
+    vector<shared_ptr<EpGroup> > epgs;
+    space->resolveGbpEpGroup(epgs);
+    Mutator m2(framework, policyOwner);
+    BOOST_FOREACH (shared_ptr<EpGroup>& eg, epgs) {
+        if (eg->getURI() != epg0->getURI()) {
+            eg->remove();
+        }
+    }
+    m2.commit();
+    epgs.clear();
+    WAIT_FOR_DO(epgs.size() == 1, 500,
+                epgs.clear(); space->resolveGbpEpGroup(epgs));
+
+    exec.Clear();
+    exec.Expect(FlowEdit::add, fe_fixed_tun_new);
+    exec.Expect(FlowEdit::del, fe_fixed[6]);
+    exec.Expect(FlowEdit::mod, fe_fallback_tun_new);
+    exec.Expect(FlowEdit::add, fe_epg0_tun_new);
+    exec.Expect(FlowEdit::del, fe_epg0[0]);
+    exec.Expect(FlowEdit::mod, fe_ep2_tun_new);
+    portmapper.ports[tunIf] = tun_port_new;
+    flowManager.portStatusUpdate(tunIf, tun_port_new);
+    WAIT_FOR(exec.IsEmpty(), 500);
+
+    /* remove mapping for tunnel port */
+    exec.Clear();
+    exec.Expect(FlowEdit::del, fe_fixed_tun_new);
+    exec.Expect(FlowEdit::del, fe_fallback_tun_new);
+    exec.Expect(FlowEdit::del, fe_epg0_tun_new);
+    exec.Expect(FlowEdit::del, fe_ep2_tun_new);
+    portmapper.ports.erase(tunIf);
+    flowManager.portStatusUpdate(tunIf, tun_port_new);
+    WAIT_FOR(exec.IsEmpty(), 500);
+}
+
+BOOST_FIXTURE_TEST_CASE(portstatus_vxlan, VxlanFlowManagerFixture) {
+    portStatusTest();
+}
+
+BOOST_FIXTURE_TEST_CASE(portstatus_vlan, VlanFlowManagerFixture) {
+    portStatusTest();
 }
 
 BOOST_FIXTURE_TEST_CASE(learn, VxlanFlowManagerFixture) {
@@ -585,6 +713,7 @@ BOOST_FIXTURE_TEST_CASE(learn, VxlanFlowManagerFixture) {
 
     // stage 1 
     pin1.reason = OFPR_ACTION;
+    pin1.cookie = FlowManager::GetLearnEntryCookie();
     pin1.packet = &packet_buf;
     pin1.packet_len = sizeof(packet_buf);
     pin1.total_len = sizeof(packet_buf);
@@ -721,7 +850,7 @@ public:
     string done() { cntr = 0; return entry; }
     Bldr& table(uint8_t t) { rep(", table=", str(t)); return *this; }
     Bldr& priority(uint16_t p) { rep(", priority=", str(p)); return *this; }
-    Bldr& cookie(uint64_t c) { rep("cookie=", str(c, hex)); return *this; }
+    Bldr& cookie(uint64_t c) { rep("cookie=", str64(c, true)); return *this; }
     Bldr& tunId(uint32_t id) { rep(",tun_id=", str(id, true)); return *this; }
     Bldr& in(uint32_t p) { rep(",in_port=", str(p)); return *this; }
     Bldr& reg(REG r, uint32_t v) {
@@ -755,6 +884,7 @@ public:
     }
     Bldr& isVlan(uint16_t v) { rep(",vlan_tci=", strpad(v), "/0x1fff"); return *this; }
     Bldr& isNdTarget(const string& t) { rep(",nd_target=", t); return *this; }
+    Bldr& connState(const string& s) { rep(",conn_state=" + s); return *this; }
     Bldr& actions() { rep(" actions="); cntr = 1; return *this; }
     Bldr& drop() { rep("drop"); return *this; }
     Bldr& load(REG r, uint32_t v) {
@@ -771,12 +901,16 @@ public:
     Bldr& go(uint8_t t) { rep("goto_table:", str(t)); return *this; }
     Bldr& out(REG r) { rep("output:" + rstr[r]); return *this; }
     Bldr& decTtl() { rep("dec_ttl"); return *this; }
+    Bldr& conntrack(const string& f, uint16_t z) {
+        rep("ct(", f + ",zone=" + str(z), ")"); return *this;
+    }
     Bldr& group(uint32_t g) { rep("group:", str(g)); return *this; }
     Bldr& bktId(uint32_t b) { rep("bucket_id:", str(b)); return *this; }
     Bldr& bktActions() { rep(",actions="); cntr = 1; return *this; }
-    Bldr& outPort(uint32_t p) { rep("output:" + str(p)); return *this; }
+    Bldr& outPort(uint32_t p) { rep("output:", str(p)); return *this; }
     Bldr& pushVlan() { rep("push_vlan:0x8100"); return *this; }
     Bldr& inport() { rep("IN_PORT"); return *this; }
+    Bldr& controller(uint16_t len) { rep("CONTROLLER:", str(len)); return *this; }
 
 private:
     /**
@@ -797,12 +931,12 @@ private:
                 return;
             }
             pos2 = pos1+pfx.size();
-            while (pos2 != string::npos && entry[pos2] != ',' &&
+            while (pos2 < entry.size() && entry[pos2] != ',' &&
                    entry[pos2] != ' ' && entry[pos2] != '-') {
                 ++pos2;
             }
             if (!sfx.empty()) {
-                if (pos2 != string::npos &&
+                if (pos2 < entry.size() &&
                     entry.compare(pos2, sfx.size(), sfx)) {
                     continue;
                 }
@@ -814,8 +948,13 @@ private:
         } while(true);
     }
     string str(int i, bool hex = false) {
-        char buf[10];
+        char buf[20];
         sprintf(buf, hex && i != 0 ? "0x%x" : "%d", i);
+        return buf;
+    }
+    string str64(uint64_t i, bool hex = false) {
+        char buf[20];
+        sprintf(buf, hex && i != 0 ? "0x%lx" : "%lu", i);
         return buf;
     }
     string strpad(int i) {
@@ -837,6 +976,9 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
     uint32_t tunPort = flowManager.GetTunnelPort();
     address tunDstAddr = flowManager.GetTunnelDst();
     uint32_t tunDst = tunDstAddr.to_v4().to_ulong();
+    address mcastTunDstAddr = address::from_string("224.1.1.1");
+    uint32_t mcastTunDst = mcastTunDstAddr.to_v4().to_ulong();
+
     uint8_t rmacArr[6];
     memcpy(rmacArr, flowManager.GetRouterMacAddr(), sizeof(rmacArr));
     string rmac = MAC(rmacArr).toString();
@@ -858,6 +1000,7 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
                        .actions().go(1).done());
     fe_fixed.push_back(Bldr().table(0).priority(50)
                        .in(tunPort).actions().go(1).done());
+    fe_fixed_tun_new.push_back(Bldr(fe_fixed[6]).in(tun_port_new).done());
 
     switch (encapType) {
     case FlowManager::ENCAP_VLAN:
@@ -869,10 +1012,12 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
     case FlowManager::ENCAP_IVXLAN:
     default:
         fe_fallback.push_back(Bldr().table(2).priority(1)
-                              .actions().move(SEPG, TUNID).load(TUNDST, htonl(tunDst))
+                              .actions().move(SEPG, TUNID).load(TUNDST, tunDst)
                               .outPort(tunPort).done());
         break;
     }
+    fe_fallback_tun_new.push_back(Bldr(fe_fallback[0])
+                                  .outPort(tun_port_new).done());
 
     /* epg0 */
     uint32_t epg0_vnid = policyMgr.getVnidForGroup(epg0->getURI()).get();
@@ -894,6 +1039,7 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
     }
     fe_epg0.push_back(Bldr().table(4).priority(100).reg(SEPG, epg0_vnid)
             .reg(DEPG, epg0_vnid).actions().out(OUTPORT).done());
+    fe_epg0_tun_new.push_back(Bldr(fe_epg0[0]).in(tun_port_new).done());
 
     /* epg0 connected to fd0 */
     fe_epg0_fd0.push_back(Bldr(fe_epg0[0]).load(FD, 1).done());
@@ -905,25 +1051,47 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
     PolicyManager::subnet_vector_t epg0_fd0_subnets;
     policyMgr.getSubnetsForGroup(epg2->getURI(), epg0_fd0_subnets);
     BOOST_FOREACH (shared_ptr<Subnet>& sn, epg0_fd0_subnets) {
-        if (!sn->isVirtualRouterIpSet()) {
+        if (!sn->isAddressSet()) {
             continue;
         }
-        address rip = address::from_string(sn->getVirtualRouterIp(""));
+        address nip = address::from_string(sn->getAddress(""));
+        address rip;
+        if (nip.is_v6()) {
+            rip = address::from_string("fe80::a8bb:ccff:fedd:eeff");
+        } else {
+            if (!sn->isVirtualRouterIpSet()) continue;
+            rip = address::from_string(sn->getVirtualRouterIp(""));
+        }
+
         if (rip.is_v6()) {
-            continue;
+            fe_epg0_routers.push_back(Bldr()
+                                      .cookie(htonll(FlowManager::GetNDCookie()))
+                                      .table(2).priority(20).icmp6().reg(RD, 1)
+                                      .isEthDst(mmac).icmp_type(135).icmp_code(0)
+                                      .isNdTarget(rip.to_string())
+                                      .actions().controller(65535)
+                                      .done());
+        } else {
+            fe_epg0_routers.push_back(Bldr().table(2).priority(20).arp().reg(RD, 1)
+                                      .isEthDst(bmac).isTpa(rip.to_string())
+                                      .isArpOp(1)
+                                      .actions().move(ETHSRC, ETHDST)
+                                      .load(ETHSRC, "0xaabbccddeeff")
+                                      .load(ARPOP, 2)
+                                      .move(ARPSHA, ARPTHA)
+                                      .load(ARPSHA, "0xaabbccddeeff")
+                                      .move(ARPSPA, ARPTPA)
+                                      .load(ARPSPA, rip.to_v4().to_ulong())
+                                      .inport().done());
         }
-        fe_epg0_routers.push_back(Bldr().table(2).priority(20).arp().reg(RD, 1)
-                                  .isEthDst(bmac).isTpa(rip.to_string())
-                                  .isArpOp(1)
-                                  .actions().move(ETHSRC, ETHDST)
-                                  .load(ETHSRC, "0xaabbccddeeff")
-                                  .load(ARPOP, 2)
-                                  .move(ARPSHA, ARPTHA)
-                                  .load(ARPSHA, "0xaabbccddeeff")
-                                  .move(ARPSPA, ARPTPA)
-                                  .load(ARPSPA, rip.to_v4().to_ulong())
-                                  .inport().done());
     }
+
+    /* rd0 router solicitation */
+    fe_rd0.push_back(Bldr().cookie(htonll(FlowManager::GetNDCookie()))
+                     .table(2).priority(20).icmp6().reg(RD, 1)
+                     .isEthDst(mmac).icmp_type(133).icmp_code(0)
+                     .actions().controller(65535)
+                     .done());
 
     /* local EP ep0 */
     string ep0_mac = ep0->getMAC().get().toString();
@@ -978,7 +1146,7 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
                              .load(OUTPORT, ep0_port).ethSrc(rmac)
                              .ethDst(ep0_mac).decTtl().go(4).done());
             ep0_arpopt.push_back(Bldr().table(2).priority(20).icmp6().reg(RD, 1)
-                                 .isEthDst(bmac).icmp_type(135).icmp_code(0)
+                                 .isEthDst(mmac).icmp_type(135).icmp_code(0)
                                  .isNdTarget(ip).actions().load(DEPG, epg0_vnid)
                                  .load(OUTPORT, ep0_port)
                                  .ethDst(ep0_mac).go(4).done());
@@ -1044,19 +1212,22 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
         ep2_arpopt = Bldr().table(2).priority(20).arp().reg(RD, 1)
             .isEthDst(bmac).isTpa(ep2_ip0).isArpOp(1)
             .actions().load(DEPG, epg0_vnid)
-            .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, htonl(tunDst))
+            .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, tunDst)
             .ethDst(ep2_mac).go(4).done();
         fe_ep2.push_back(Bldr().table(2).priority(10).reg(BD, 1).isEthDst(ep2_mac)
                          .actions().load(DEPG, epg0_vnid).load(OUTPORT, tunPort)
-                         .move(SEPG, TUNID).load(TUNDST, htonl(tunDst)).go(4)
+                         .move(SEPG, TUNID).load(TUNDST, tunDst).go(4)
                          .done());
         fe_ep2.push_back(Bldr().table(2).priority(15).ip().reg(RD, 1)
                          .isEthDst(rmac).isIpDst(ep2_ip0).actions().load(DEPG, epg0_vnid)
-                         .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, htonl(tunDst))
+                         .load(OUTPORT, tunPort).move(SEPG, TUNID).load(TUNDST, tunDst)
                          .ethSrc(rmac).decTtl().go(4).done());
         break;
     }
     fe_ep2.push_back(ep2_arpopt);
+    BOOST_FOREACH (const string& se, fe_ep2) {
+        fe_ep2_tun_new.push_back(Bldr(se).load(OUTPORT, tun_port_new).done());
+    }
 
     /**
      * ARP flows
@@ -1084,15 +1255,23 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
     case FlowManager::ENCAP_IVXLAN:
     default:
         ge_bkt_tun = Bldr(bktInit).bktId(tunPort).bktActions().move(SEPG, TUNID)
-            .load(TUNDST, htonl(tunDst)).outPort(tunPort).done();
+            .load(TUNDST, mcastTunDst).outPort(tunPort).done();
         break;
     }
+    ge_bkt_tun_new = Bldr(ge_bkt_tun).bktId(tun_port_new)
+                     .outPort(tun_port_new).done();
     ge_fd0_prom = "group_id=2147483649,type=all";
 
     ge_bkt_ep4 = Bldr(bktInit).bktId(ep4_port).bktActions().outPort(ep4_port)
             .done();
     ge_fd1 = "group_id=2,type=all";
     ge_fd1_prom = "group_id=2147483650,type=all";
+
+    /* Group entries when flooding scope is ENDPOINT_GROUP */
+    ge_epg0 = "group_id=1,type=all";
+    ge_epg0_prom = "group_id=2147483649,type=all";
+    ge_epg2 = "group_id=2,type=all";
+    ge_epg2_prom = "group_id=2147483650,type=all";
 
     uint32_t epg2_vnid = policyMgr.getVnidForGroup(epg2->getURI()).get();
     uint32_t epg3_vnid = policyMgr.getVnidForGroup(epg3->getURI()).get();
@@ -1118,9 +1297,19 @@ FlowManagerFixture::createEntriesForObjects(FlowManager::EncapType encapType) {
             con1->getURI());
     BOOST_FOREACH(uint32_t pvnid, pvnids) {
         BOOST_FOREACH(uint32_t cvnid, cvnids) {
+            uint16_t ctzone = (uint16_t)cvnid;
             fe_con1.push_back(Bldr().table(4).priority(prio)
                     .cookie(con1_cookie).tcp()
                     .reg(SEPG, cvnid).reg(DEPG, pvnid).isTpDst(80)
+                    .actions().conntrack("commit", ctzone).out(OUTPORT)
+                    .done());
+            fe_con1.push_back(Bldr().table(4).priority(prio)
+                    .cookie(con1_cookie).connState("-trk").tcp()
+                    .reg(SEPG, pvnid).reg(DEPG, cvnid)
+                    .actions().conntrack("recirc", ctzone).done());
+            fe_con1.push_back(Bldr().table(4).priority(prio)
+                    .cookie(con1_cookie).connState("-new+est+trk").tcp()
+                    .reg(SEPG, pvnid).reg(DEPG, cvnid)
                     .actions().out(OUTPORT).done());
             fe_con1.push_back(Bldr().table(4).priority(prio-1)
                     .cookie(con1_cookie).arp()
