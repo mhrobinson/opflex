@@ -16,30 +16,22 @@
 #include <openssl/err.h>
 #include <iovec-utils.hh>
 
-#include <boost/filesystem/path.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem.hpp>
-
-#include <boost/system/error_code.hpp>
-
 #include <algorithm>
 
 #include <sys/uio.h>
+#include <sys/stat.h>
 #include <cassert>
-
-#if BOOST_VERSION < 105000
-namespace boost { namespace filesystem {
-
-# ifndef BOOST_FILESYSTEM_NO_DEPRECATED
-    using filesystem3::complete;
-# endif
-
-}}
-#endif
 
 namespace {
 
     bool const SSL_ERROR = true;
+
+    char const * safe_strerror(int error_no) {
+        if ((error_no >= sys_nerr) || (error_no < 0)) {
+            return "Unknown error";
+        }
+        return sys_errlist[errno];
+    }
 
 }
 
@@ -59,6 +51,21 @@ __IF_SSL_ERROR_INTO(_, variable, condition, ...)                  \
 #define                                                           \
 IF_SSL_ERROR(...)                                                 \
     __IF_SSL_ERROR_INTO(_, ##__VA_ARGS__, SSL_ERROR, true)
+
+#define IF_SSL_EMIT_ERRORS(___peer___)                                          \
+    for (                                                                       \
+          int ___firstErr = ERR_peek_error(), ___lastErr = ERR_peek_last_error()\
+        ;                                                                       \
+          (                                                                     \
+            ___firstErr && (___peer___->onTransportError(___firstErr), true) && \
+            ___lastErr  && (___lastErr != ___firstErr) &&                       \
+            (___peer___->onTransportError( ___lastErr), true)                   \
+          ) || (                                                                \
+            ___firstErr                                                         \
+          )                                                                     \
+        ;                                                                       \
+          ___firstErr = 0                                                       \
+        )
 
 namespace yajr { namespace transport {
 
@@ -161,12 +168,15 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
 #endif
 
     }
-    IF_SSL_ERROR(sslErr) {
-        LOG(ERROR)
-            << peer
-            << " Failed to decrypt input: "
-            << sslErr
-        ;
+    IF_SSL_EMIT_ERRORS(peer) {
+        IF_SSL_ERROR(sslErr) {
+            LOG(ERROR)
+                << peer
+                << " Failed to decrypt input: "
+                << sslErr
+            ;
+        }
+        const_cast<CommunicationPeer *>(peer)->onDisconnect();
     }
 
     LOG(DEBUG)
@@ -233,12 +243,15 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
         }
 
     }
-    IF_SSL_ERROR(sslErr, nwrite <= 0) {
-        LOG(ERROR)
-            << peer
-            << " Failed to encrypt output: "
-            << sslErr
-        ;
+    IF_SSL_EMIT_ERRORS(peer) {
+        IF_SSL_ERROR(sslErr, nwrite <= 0) {
+            LOG(ERROR)
+                << peer
+                << " Failed to encrypt output: "
+                << sslErr
+            ;
+        }
+        const_cast<CommunicationPeer *>(peer)->onDisconnect();
     }
 
     peer->s_.deque_.erase(
@@ -508,7 +521,7 @@ void Cb< ZeroCopyOpenSSL >::on_read(
         assert(advancement == nread);
 
         if (giveUp) {
-            peer->disconnect();
+            peer->onDisconnect();
             return;
         }
 
@@ -830,58 +843,45 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
         char const * passphrase
    ) {
 
-    boost::system::error_code ec;
     bool isDir;
 
     if (caFileOrDirectory) {
-        boost::filesystem::path p(caFileOrDirectory);
 
-        if (!boost::filesystem::exists(p, ec)) {
+        struct stat s;
+        if (stat(caFileOrDirectory, &s)) {
+
             LOG(ERROR)
-                << "Path \""
-                << p
+                << "Error ["
+                << errno
+                << "] (\""
+                << safe_strerror(errno)
+                << "\") on path \""
+                << caFileOrDirectory
                 << "\" does not exist"
             ;
             return NULL;
+
         }
-        isDir = boost::filesystem::is_directory(p, ec);
-        if (ec.value()) {
-            LOG(ERROR)
-                << "Error while accessing \""
-                << p
-                << "\""
-#if 1
-                << ", error value "
-                << ec.value()
-                << " category "
-                << ec.category().name()
-#endif
-            ;
-            return NULL;
-        }
-        if (!isDir) {
-            isDir = !boost::filesystem::is_regular(p, ec);
-            if (ec.value()) {
-                LOG(ERROR)
-                    << "Error while accessing \""
-                    << p
-                    << "\""
-#if 1
-                    << ", error value "
-                    << ec.value()
-                    << " category "
-                    << ec.category().name()
-#endif
-                ;
-                return NULL;
-            }
-            if (isDir) {
+
+        if ((s.st_mode & S_IFDIR) && !(s.st_mode & S_IFREG)) {
+
+            isDir = true;
+
+        } else {
+
+            if (!(s.st_mode & S_IFDIR) && (s.st_mode & S_IFREG)) {
+
+                isDir = false;
+
+            } else {
+
                 LOG(ERROR)
                     << "Path \""
-                    << p
-                    << "\" is neither a directory nor a regular file"
+                    << caFileOrDirectory
+                    << "\" must be either a regular file or a directory"
                 ;
                 return NULL;
+
             }
         }
     }
@@ -916,19 +916,6 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
         }
     }
 
-    if (keyFilePath) {
-        if (1 != SSL_CTX_use_certificate_chain_file(sslCtx, keyFilePath)) {
-            ++failure;
-
-            LOG(ERROR)
-                << "SSL_CTX_use_certificate_chain_file() failed to open certificate @ \""
-                << keyFilePath
-                << "\": "
-                << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
-            ;
-        }
-    }
-
     if (!failure) {
 
         Ctx * ctx = new (std::nothrow)Ctx(sslCtx, passphrase);
@@ -955,6 +942,17 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
                 SSL_CTX_set_default_passwd_cb(sslCtx, pwdCb);
                 SSL_CTX_set_default_passwd_cb_userdata(sslCtx, ctx); /* Important! */
 
+                if (1 != SSL_CTX_use_certificate_chain_file(sslCtx, keyFilePath)) {
+                    ++failure;
+
+                    LOG(ERROR)
+                        << "SSL_CTX_use_certificate_chain_file() failed to open certificate @ \""
+                        << keyFilePath
+                        << "\": "
+                        << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
+                    ;
+                }
+
                 if (1 != SSL_CTX_use_PrivateKey_file(sslCtx, keyFilePath, SSL_FILETYPE_PEM)) {
 
                     ++failure;
@@ -965,6 +963,10 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
                         << "\": "
                         << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
                     ;
+
+                }
+
+                if (failure) {
 
                     delete ctx;
                     ctx = NULL;
@@ -984,6 +986,7 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
 
         }
 
+        assert(!ctx);
         /* FALL-THROUGH */
     }
 
@@ -994,6 +997,7 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
     ;
 
     SSL_CTX_free(sslCtx);
+
     return NULL;
 }
 

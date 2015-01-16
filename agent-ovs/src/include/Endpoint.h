@@ -12,6 +12,7 @@
 #include <string>
 
 #include <boost/unordered_set.hpp>
+#include <boost/unordered_map.hpp>
 #include <boost/optional.hpp>
 #include <opflex/modb/URI.h>
 #include <opflex/modb/MAC.h>
@@ -44,7 +45,11 @@ public:
         : uuid(uuid_), promiscuousMode(false) {}
 
     /**
-     * Get the endpoint group URI associated with this endpoint.
+     * Get the endpoint group URI associated with this endpoint.  Note
+     * that this is just the URI as discovered locally.  If the
+     * endpoint group is assigned through an EPG mapping, then this
+     * field will not be set to the correct URI.  Instead, @see
+     * EndpointManager::getComputedEPG.
      *
      * @return the endpoint URI
      */
@@ -68,6 +73,32 @@ public:
      */
     void unsetEgURI() {
         egURI = boost::none;
+    }
+
+    /**
+     * Get the mapping alias for this endpoint
+     *
+     * @return the mapping alias
+     */
+    const boost::optional<std::string>& getEgMappingAlias() const {
+        return egMappingAlias;
+    }
+
+    /**
+     * Set the mapping alias for this endpoint.  The mapping alias can
+     * be used to find the endpoint group mapping for the endpoint
+     *
+     * @param egMappingAlias name of the mapping alias
+     */
+    void setEgMappingAlias(const std::string& egMappingAlias) {
+        this->egMappingAlias = egMappingAlias;
+    }
+
+    /**
+     * Unset the eg mapping alias
+     */
+    void unsetEgMappingAlias() {
+        egMappingAlias = boost::none;
     }
 
     /**
@@ -172,7 +203,7 @@ public:
     /**
      * Set the promomiscuous mode flag to the value specified
      *
-     * @param promisciousMode the new value for the promiscuous mode
+     * @param promiscuousMode the new value for the promiscuous mode
      */
     void setPromiscuousMode(bool promiscuousMode) {
         this->promiscuousMode = promiscuousMode;
@@ -187,13 +218,46 @@ public:
         return promiscuousMode;
     }
 
+    /**
+     * Clear the attribute map
+     */
+    void clearAttributes() {
+        attributes.clear();
+    }
+
+    /**
+     * Add an attribute to the attribute map
+     *
+     * @param name the name of the attribute to set
+     * @param value the new value for the attribute
+     */
+    void addAttribute(const std::string& name, const std::string& value) {
+        attributes[name] = value;
+    }
+
+    /**
+     * A string to string mapping
+     */
+    typedef boost::unordered_map<std::string, std::string> attr_map_t;
+
+    /**
+     * Get a reference to a map of name/value attributes
+     *
+     * @return a map of name/value attribute pairs
+     */
+    const attr_map_t& getAttributes() const {
+        return attributes;
+    }
+
 private:
     std::string uuid;
     boost::optional<opflex::modb::MAC> mac;
     boost::unordered_set<std::string> ips;
+    boost::optional<std::string> egMappingAlias;
     boost::optional<opflex::modb::URI> egURI;
     boost::optional<std::string> interfaceName;
     bool promiscuousMode;
+    attr_map_t attributes;
 };
 
 /**
