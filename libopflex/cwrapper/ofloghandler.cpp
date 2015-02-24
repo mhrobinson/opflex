@@ -23,63 +23,63 @@ using opflex::logging::OFLogHandler;
 static int getLevel(OFLogHandler::Level level) {
     switch (level) {
     case OFLogHandler::FATAL:
-        return LOG_FATAL;
+        return OF_LOG_FATAL;
         break;
     case OFLogHandler::ERROR:
-        return LOG_ERROR;
+        return OF_LOG_ERROR;
         break;
     case OFLogHandler::WARNING:
-        return LOG_WARNING;
+        return OF_LOG_WARNING;
         break;
     case OFLogHandler::INFO:
-        return LOG_INFO;
+        return OF_LOG_INFO;
         break;
     case OFLogHandler::DEBUG1:
-        return LOG_DEBUG1;
+        return OF_LOG_DEBUG1;
         break;
     case OFLogHandler::DEBUG2:
-        return LOG_DEBUG2;
+        return OF_LOG_DEBUG2;
         break;
     case OFLogHandler::DEBUG3:
-        return LOG_DEBUG3;
+        return OF_LOG_DEBUG3;
         break;
     case OFLogHandler::DEBUG4:
-        return LOG_DEBUG4;
+        return OF_LOG_DEBUG4;
         break;
     case OFLogHandler::TRACE:
     default:
-        return LOG_TRACE;
+        return OF_LOG_TRACE;
         break;
     }
 }
 
 static OFLogHandler::Level getLevel(int level) {
     switch (level) {
-    case LOG_INFO:
+    case OF_LOG_INFO:
         return OFLogHandler::INFO;
         break;
-    case LOG_WARNING:
+    case OF_LOG_WARNING:
         return OFLogHandler::WARNING;
         break;
-    case LOG_ERROR:
+    case OF_LOG_ERROR:
         return OFLogHandler::ERROR;
         break;
-    case LOG_FATAL:
+    case OF_LOG_FATAL:
         return OFLogHandler::FATAL;
         break;
-    case LOG_DEBUG1:
+    case OF_LOG_DEBUG1:
         return OFLogHandler::DEBUG1;
         break;
-    case LOG_DEBUG2:
+    case OF_LOG_DEBUG2:
         return OFLogHandler::DEBUG2;
         break;
-    case LOG_DEBUG3:
+    case OF_LOG_DEBUG3:
         return OFLogHandler::DEBUG3;
         break;
-    case LOG_DEBUG4:
+    case OF_LOG_DEBUG4:
         return OFLogHandler::DEBUG4;
         break;
-    case LOG_TRACE:
+    case OF_LOG_TRACE:
     default:
         return OFLogHandler::TRACE;
         break;

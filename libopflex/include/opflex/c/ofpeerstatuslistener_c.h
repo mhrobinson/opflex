@@ -93,10 +93,6 @@
  * @} cpoolhealth
  */
 
-/**
- * A pointer to peer status listener object
- */
-typedef ofobj_p ofpeerstatuslistener_p;
 
 #ifdef __cplusplus
 extern "C" {

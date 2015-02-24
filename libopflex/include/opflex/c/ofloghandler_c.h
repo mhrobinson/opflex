@@ -59,47 +59,47 @@ typedef void (*loghandler_p)(const char* file, int line,
 /**
  * Trace log level
  */
-#define LOG_TRACE 10
+#define OF_LOG_TRACE 10
 
 /**
  * Debug4 (lowest debug) log level
  */
-#define LOG_DEBUG4 20
+#define OF_LOG_DEBUG4 20
 
 /**
  * Debug 3 log level
  */
-#define LOG_DEBUG3 30
+#define OF_LOG_DEBUG3 30
 
 /**
  * Debug 2 log level
  */
-#define LOG_DEBUG2 40
+#define OF_LOG_DEBUG2 40
 
 /**
  * Debug 1 (highest debug) log level
  */
-#define LOG_DEBUG1 50
+#define OF_LOG_DEBUG1 50
 
 /**
  * Info log level
  */
-#define LOG_INFO 60
+#define OF_LOG_INFO 60
 
 /**
  * Warning log level
  */
-#define LOG_WARNING 70
+#define OF_LOG_WARNING 70
 
 /**
  * Error log level
  */
-#define LOG_ERROR 80
+#define OF_LOG_ERROR 80
 
 /**
  * Fatal log level
  */
-#define LOG_FATAL 90
+#define OF_LOG_FATAL 90
 
 #ifdef __cplusplus
 extern "C" {
