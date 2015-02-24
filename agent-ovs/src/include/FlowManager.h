@@ -24,6 +24,10 @@
 #include "FlowReader.h"
 #include "FlowExecutor.h"
 #include "IdGenerator.h"
+#include "JsonCmdExecutor.h"
+#include "ActionBuilder.h"
+#include "PacketInHandler.h"
+#include "AdvertManager.h"
 
 namespace ovsagent {
 
@@ -37,7 +41,6 @@ namespace ovsagent {
 class FlowManager : public EndpointListener,
                     public PolicyListener,
                     public OnConnectListener,
-                    public MessageHandler,
                     public PortStatusListener {
 public:
     /**
@@ -76,12 +79,19 @@ public:
      *
      * @param r The reader object
      */
-    void SetFlowReader(FlowReader *r) {
-        reader = r;
+    void SetFlowReader(FlowReader *r);
+
+    /**
+     * Set the object used for executing control commands against the
+     * openvswitch daemon.
+     * @param e The executor object
+     */
+    void setJsonCmdExecutor(JsonCmdExecutor *e) {
+        jsonCmdExecutor = e;
     }
 
     /**
-     * Register the given connection with the learning switch. Installs
+     * Register the given connection with the flow manager. Installs
      * all the necessary listeners on the connection.
      *
      * @param connection the connection to use for learning
@@ -157,6 +167,13 @@ public:
      * @param encapType the encap type
      */
     void SetEncapType(EncapType encapType);
+
+    /**
+     * Get the encap type to use for packets sent over the network
+     * @return the encap type
+     */
+    EncapType GetEncapType() { return encapType; }
+
     /**
      * Set the openflow interface name for encapsulated packets
      * @param encapIface the interface name
@@ -191,18 +208,40 @@ public:
     void SetTunnelRemoteIp(const std::string& tunnelRemoteIp);
 
     /**
+     * Set the remote port to use for tunnel traffic
+     * @param tunnelRemotePort the remote tunnel port
+     */
+    void setTunnelRemotePort(uint16_t tunnelRemotePort);
+
+    /**
      * Enable or disable the virtual routing
      *
      * @param virtualRouterEnabled true to enable the router
+     * @param routerAdv true to enable IPv6 router advertisements
+     * @param mac the MAC address to use as the router MAC formatted
+     * as a colon-separated string of 6 hex-encoded bytes.
      */
-    void SetVirtualRouter(bool virtualRouterEnabled);
+    void SetVirtualRouter(bool virtualRouterEnabled,
+                          bool routerAdv,
+                          const std::string& mac);
 
     /**
-     * Set the MAC address to use for the virtual router
-     * @param mac the MAC address formatted as a colon-separated
-     * string of 6 hex-encoded bytes.
+     * Enable or disable the virtual DHCP server
+     *
+     * @param dhcpEnabled true to enable the server
+     * @param mac the MAC address to use as the dhcp MAC formatted as
+     * a colon-separated string of 6 hex-encoded bytes.
      */
-    void SetVirtualRouterMac(const std::string& mac);
+    void SetVirtualDHCP(bool dhcpEnabled,
+                        const std::string& mac);
+
+    /**
+     * Enable or disable endpoint advertisements
+     *
+     * @param endpointAdv true to enable periodic endpoint
+     * advertisements
+     */
+    void SetEndpointAdv(bool endpointAdv);
 
     /**
      * Set the flow ID cache directory
@@ -230,6 +269,12 @@ public:
     const uint8_t *GetRouterMacAddr() { return routerMac; }
 
     /**
+     * Get the DHCP MAC address as an array of 6 bytes
+     * @return the DHCP MAC
+     */
+    const uint8_t *GetDHCPMacAddr() { return dhcpMac; }
+
+    /**
      * Set the delay after which flow-manager will attempt to reconcile
      * cached memory state with the flow tables on the switch once connection
      * is established to the switch. Applies only to the next time
@@ -245,6 +290,8 @@ public:
 
     /* Interface: PolicyListener */
     void egDomainUpdated(const opflex::modb::URI& egURI);
+    void domainUpdated(opflex::modb::class_id_t cid,
+                       const opflex::modb::URI& domURI);
     void contractUpdated(const opflex::modb::URI& contractURI);
     void configUpdated(const opflex::modb::URI& configURI);
 
@@ -252,17 +299,20 @@ public:
     void Connected(SwitchConnection *swConn);
 
     /* Interface: PortStatusListener */
-    void portStatusUpdate(const std::string& portName, uint32_t portNo);
+    void portStatusUpdate(const std::string& portName, uint32_t portNo,
+                          bool fromDesc);
 
     /**
-     * Get the VNIDs for the specified endpoint groups.
+     * Get the VNID and routing-domain ID for the specified endpoint groups.
      *
      * @param egURIs URIs of endpoint groups to search for
-     * @param egVnids VNIDs of the endpoint groups for those which
-     * have one
+     * @param egids Map of VNIDs-to-RoutingDomainID  of the endpoint
+     * groups which have a VNID. Routing-domain ID is set to 0 if the group
+     * is not part of a routing-domain
      */
-    void GetGroupVnids(const boost::unordered_set<opflex::modb::URI>& egURIs,
-            /* out */boost::unordered_set<uint32_t>& egVnids);
+    void getEpgVnidAndRdId(
+        const boost::unordered_set<opflex::modb::URI>& egURIs,
+        /* out */boost::unordered_map<uint32_t, uint32_t>& egids);
 
     /**
      * Get or generate a unique ID for a given object for use with flows.
@@ -289,7 +339,7 @@ public:
     static ovs_be64 GetProactiveLearnEntryCookie();
 
     /**
-     * Get the cookie used for cookies that direct neighbor discovery
+     * Get the cookie used for flows that direct neighbor discovery
      * packets to the controller
      *
      * @return flow-cookie for ND packets
@@ -297,13 +347,34 @@ public:
     static ovs_be64 GetNDCookie();
 
     /**
+     * Get the cookie used for flows that direct DHCP packets to the
+     * controller
+     *
+     * @param v4 true for dhcpv4, false for v6
+     * @return flow-cookie for DHCPv4 packets
+     */
+    static ovs_be64 GetDHCPCookie(bool v4 = true);
+
+    /**
+     * Set fill in tunnel metadata in an action builder
+     * @param ab the action builder
+     * @param type the encap type
+     * @param tunDst the tunnel destination
+     */
+    static void
+    SetActionTunnelMetadata(ActionBuilder& ab, FlowManager::EncapType type, 
+                            const boost::asio::ip::address& tunDst);
+
+    /**
+     * Get the promiscuous-mode ID equivalent for a flood domain ID
+     * @param fgrpId the flood domain Id
+     */
+    static uint32_t getPromId(uint32_t fgrpId);
+
+    /**
      * Maximum flow priority of the entries in policy table.
      */
     static const uint16_t MAX_POLICY_RULE_PRIORITY;
-
-    // see: MessageHandler
-    void Handle(SwitchConnection *swConn,
-                ofptype type, ofpbuf *msg);
 
     /**
      * Indicate that the agent is connected to its Opflex peer.
@@ -311,6 +382,14 @@ public:
      * of unit-testing.
      */
     void PeerConnected();
+
+    /**
+     * Enqueue a task to be executed asynchronously on the flow
+     * manager's task queue
+     *
+     * @param w the work item to enqueue
+     */
+    void QueueFlowTask(const WorkItem& w);
 
     /**
      * Indices of tables managed by the flow-manager.
@@ -333,6 +412,16 @@ private:
      * @param egURI URI of the changed endpoint group
      */
     void HandleEndpointGroupDomainUpdate(const opflex::modb::URI& egURI);
+
+    /**
+     * Handle changes to a forwarding domain; only deals with
+     * cleaning up flows etc when these objects are removed.
+     *
+     * @param cid Class of the forwarding domain
+     * @param domURI URI of the changed forwarding domain
+     */
+    void HandleDomainUpdate(opflex::modb::class_id_t cid,
+                            const opflex::modb::URI& domURI);
 
     /**
      * Compare and update flow/group tables due to changes in a contract
@@ -393,16 +482,18 @@ private:
      * to the provided list.
      *
      * @param classifier Classifier object to get matching rules from
+     * @param allow true if the traffic should be allowed, false otherwise
      * @param priority Priority of the entry created
      * @param cookie Cookie of the entry created
      * @param svnid VNID of the source endpoint group for the entry
      * @param dvnid VNID of the destination endpoint group for the entry
+     * @param srdid RoutingDomain ID of the source endpoint group
      * @param entries List to append entry to
      */
     void AddEntryForClassifier(modelgbp::gbpe::L24Classifier *classifier,
-            uint16_t priority, uint64_t cookie,
-            uint32_t& svnid, uint32_t& dvnid,
-            FlowEntryList& entries);
+                               bool allow, uint16_t priority, uint64_t cookie,
+                               uint32_t svnid, uint32_t dvnid, uint32_t srdid,
+                               FlowEntryList& entries);
 
     static bool ParseIpv4Addr(const std::string& str, uint32_t *ip);
     static bool ParseIpv6Addr(const std::string& str, in6_addr *ip);
@@ -454,15 +545,20 @@ private:
     FlowExecutor* executor;
     PortMapper *portMapper;
     FlowReader *reader;
+    JsonCmdExecutor *jsonCmdExecutor;
 
     FallbackMode fallbackMode;
     EncapType encapType;
     std::string encapIface;
     FloodScope floodScope;
     boost::asio::ip::address tunnelDst;
+    std::string tunnelPortStr;
     boost::optional<boost::asio::ip::address> mcastTunDst;
     bool virtualRouterEnabled;
     uint8_t routerMac[6];
+    bool routerAdv;
+    bool virtualDHCPEnabled;
+    uint8_t dhcpMac[6];
     TableState flowTables[NUM_FLOW_TABLES];
     std::string flowIdCache;
 
@@ -537,6 +633,12 @@ private:
         void ReconcileGroups();
 
         /**
+         * Compare multicast subscription read from openvswitch daemon and make
+         * modifications to eliminate differences.
+         */
+        void reconcileMulticastList();
+
+        /**
          * Check if a group with given ID and endpoints is present
          * in the received groups, and update the given group-edits if the
          * group is not found or is different. If a group is found, it is
@@ -565,6 +667,9 @@ private:
 
     FlowSyncer flowSyncer;
 
+    PacketInHandler pktInHandler;
+    AdvertManager advertManager;
+
     volatile bool stopping;
 
     /**
@@ -574,16 +679,45 @@ private:
     boost::scoped_ptr<boost::asio::deadline_timer> connectTimer;
     long connectDelayMs;
 
-    /**
-     * Timer callback for router advertisements
-     */
-    void OnAdvertTimer(const boost::system::error_code& ec);
-    boost::scoped_ptr<boost::asio::deadline_timer> advertTimer;
-    volatile int initialAdverts;
-
     bool opflexPeerConnected;
 
     void initPlatformConfig();
+
+    /* Set of URIs of managed objects */
+    typedef boost::unordered_set<opflex::modb::URI> UriSet;
+    /* Map of multi-cast IP addresses to associated managed objects */
+    typedef boost::unordered_map<std::string, UriSet> MulticastMap;
+    MulticastMap mcastMap;
+
+    /**
+     * Associate or disassociate a managed object with a multicast IP, and
+     * update the multicast group subscription if necessary.
+     * @param mcastIp The multicast IP to associate with; if unset disassociates
+     * any previous association
+     * @param uri URI of the managed object to associate to
+     */
+    void updateMulticastList(const boost::optional<std::string>& mcastIp,
+                             const opflex::modb::URI& uri);
+
+    /**
+     * Remove all multicast IP associations for a managed object.
+     * @param uri URI of the managed object to disassociate
+     */
+    void removeFromMulticastList(const opflex::modb::URI& uri);
+
+    /**
+     * Get the currently configured multicast group subscriptions from the
+     * Openvswitch daemon.
+     * @param mcastIps Contains the groups subscribed to
+     */
+    void fetchMulticastSubscription(boost::unordered_set<std::string>& mcastIps);
+
+    /**
+     * Configure Openvswitch daemon to join or leave a multicast group.
+     * @param mcastIp IP address of the group to join or leave
+     * @params leave If true, leave the group, else join the group
+     */
+    void changeMulticastSubscription(const std::string& mcastIp, bool leave);
 };
 
 } // namespace ovsagent

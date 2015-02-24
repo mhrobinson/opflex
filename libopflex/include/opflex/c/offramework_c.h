@@ -53,6 +53,11 @@ typedef ofobj_p ofmetadata_p;
  */
 typedef ofobj_p offramework_p;
 
+/**
+ * A pointer to peer status listener object
+ */
+typedef ofobj_p ofpeerstatuslistener_p;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -138,6 +143,16 @@ extern "C" {
      */
     ofstatus offramework_add_peer(offramework_p framework,
                                   const char* hostname, int port);
+
+    /**
+     * register to listen to opflex peer connection status and health
+     * @param framework the framework
+     * @param obj The peer status listener object created with @ref
+     * ofpeerstatuslistener_cr eate.
+     * @return a status code 
+     */
+    ofstatus offramework_register_peerstatuslistener(offramework_p framework,
+                                                     ofpeerstatuslistener_p obj);
 
 #ifdef __cplusplus
 } /* extern "C" */

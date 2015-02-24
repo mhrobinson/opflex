@@ -96,7 +96,8 @@ public:
 
     /**
      * Check whether the connection is ready to accept requests by
-     * calling the opflex handler
+     * calling the opflex handler.  This means the handshake has
+     * succeeded.
      *
      * @return true if the connection is ready
      */
@@ -175,19 +176,28 @@ protected:
     virtual yajr::Peer* getPeer() = 0;
 #endif
 
+protected:
+    /**
+     * Clean up write queue
+     */
+    virtual void cleanup();
+
 private:
 #ifdef SIMPLE_RPC
     typedef std::pair<uv_write_t*, const rapidjson::StringBuffer*> write_t;
     typedef std::list<write_t> write_list_t;
     write_list_t write_list;
+#else
+    uint64_t requestId;
 #endif
 
-    typedef std::list<OpflexMessage*> write_queue_t;
+    uint64_t connGeneration;
+    typedef std::pair<OpflexMessage*, uint64_t> write_queue_item_t;
+    typedef std::list<write_queue_item_t> write_queue_t;
     write_queue_t write_queue;
     uv_mutex_t queue_mutex;
 
     void doWrite(OpflexMessage* message);
-    void cleanup();
 
     virtual void notifyReady();
 

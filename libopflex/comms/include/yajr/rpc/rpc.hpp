@@ -13,14 +13,11 @@
 #include <yajr/rpc/send_handler.hpp>
 #include <yajr/yajr.hpp>
 
-#include <opflex/logging/internal/logging.hpp>
-
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 
 #include <uv.h>
 
-#include <boost/intrusive/set.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/function.hpp>
@@ -51,10 +48,10 @@ class GeneratorFromValue {
 
 class Identifier {
   public:
-    virtual bool emitId(yajr::rpc::SendHandler & h) = 0;
+    virtual bool emitId(yajr::rpc::SendHandler & h) const = 0;
   protected:
-    virtual char const * requestMethod() = 0;
-    virtual MethodName * getMethodName() = 0;
+    virtual char const * requestMethod() const = 0;
+    virtual MethodName * getMethodName() const = 0;
 };
 
 struct LocalId {
@@ -74,31 +71,17 @@ class LocalIdentifier : virtual public Identifier, private LocalId {
             LocalId(methodName, id)
         {}
 
-    bool emitId(yajr::rpc::SendHandler & h) {
-
-        if (!h.StartArray())
-            return false;
-
-        if (!h.String(requestMethod())) {
-            return false;
-        }
-
-        if (!h.Uint64(id_)) {
-            return false;
-        }
-
-        return h.EndArray();
-    }
+    bool emitId(yajr::rpc::SendHandler & h) const;
 
     LocalId const getLocalId() const {
         return LocalId(methodName_, id_);
     }
 
   protected:
-    char const * requestMethod() {
+    char const * requestMethod() const {
         return methodName_->s;
     }
-    MethodName * getMethodName() {
+    MethodName * getMethodName() const {
         return methodName_;
     }
 };
@@ -106,17 +89,16 @@ class LocalIdentifier : virtual public Identifier, private LocalId {
 class RemoteIdentifier : virtual public Identifier {
   public:
     RemoteIdentifier(rapidjson::Value const & id) : id_(id) {}
-    bool emitId(yajr::rpc::SendHandler & h) {
-        return id_.Accept(h);
-    }
+    bool emitId(yajr::rpc::SendHandler & h) const;
+
     rapidjson::Value const & getRemoteId() const {
         return id_;
     }
   protected:
-    char const * requestMethod() {
+    char const * requestMethod() const {
         return NULL;
     }
-    MethodName * getMethodName() {
+    MethodName * getMethodName() const {
         return NULL;
     }
   private:
@@ -252,7 +234,7 @@ class OutboundMessage : public Message, virtual public Identifier {
     /**
      * Send this message now!
      */
-    void send();
+    bool send();
 
     /**
      * @brief Constructor needed by derived classes
@@ -513,7 +495,7 @@ class OutboundRequest : public OutboundMessage,
      * Send this message now!
      */
     using OutboundMessage::send;
-    void send(::yajr::Peer const & peer);
+    bool send(::yajr::Peer const & peer);
 
   protected:
     /**
@@ -655,6 +637,8 @@ std::size_t hash_value(yajr::rpc::LocalId const & id);
 std::size_t hash_value(yajr::rpc::LocalIdentifier const & id);
 std::size_t hash_value(yajr::rpc::RemoteIdentifier const & id);
 
-}}
+} /* yajr::rpc namespace */
+} /* yajr namespace */
 
 #endif/*_____COMMS__INCLUDE__OPFLEX__RPC_HPP*/
+

@@ -40,6 +40,10 @@ std::ostream & operator<<(std::ostream &os, const Endpoint& ep) {
     const boost::optional<std::string>& iface = ep.getInterfaceName();
     if (iface)
         os << ",iface=" << iface.get();
+    if (ep.getDHCPv4Config())
+        os << ",dhcpv4";
+    if (ep.getDHCPv6Config())
+        os << ",dhcpv6";
 
     return os;
 }

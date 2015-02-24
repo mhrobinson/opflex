@@ -32,6 +32,55 @@
 namespace ovsagent {
 
 /**
+ * Class to represent information about a rule.
+ */
+class PolicyRule {
+public:
+    /**
+     * Constructor that accepts direction and L24Classifier.
+     * @param dir The direction of the classifier rule
+     * @param c Details of the classifier rule
+     * @param allow_ true if the traffic should be allowed; false
+     * otherwise
+     */
+    PolicyRule(const uint8_t dir,
+               const boost::shared_ptr<modelgbp::gbpe::L24Classifier>& c,
+               bool allow_) :
+        direction(dir), l24Classifier(c), allow(allow_) {
+    }
+
+    /**
+     * Get the direction of the classifier rule.
+     * @return the direction
+     */
+    uint8_t getDirection() const {
+        return direction;
+    }
+
+    /**
+     * Whether matching traffic should be allowed or dropped
+     * @return true if traffic should be allowed, false otherwise
+     */
+    bool getAllow() const {
+        return allow;
+    }
+
+    /**
+     * Get the L24Classifier object for the classifier rule.
+     * @return the L24Classifier object.
+     */
+    const boost::shared_ptr<modelgbp::gbpe::L24Classifier>&
+    getL24Classifier() const {
+        return l24Classifier;
+    }
+
+private:
+    uint8_t direction;
+    boost::shared_ptr<modelgbp::gbpe::L24Classifier> l24Classifier;
+    bool allow;
+};
+
+/**
  * The policy manager maintains various state and indices related
  * to policy.
  */
@@ -129,6 +178,17 @@ public:
     getFDForGroup(const opflex::modb::URI& eg);
 
     /**
+     * Get the flood context for the specified endpoint group if it
+     * exists
+     *
+     * @param eg the URI for the endpoint group
+     * @return the flood context or boost::none if the group or the
+     * domain is not found
+     */
+    boost::optional<boost::shared_ptr<modelgbp::gbpe::FloodContext> >
+    getFloodContextForGroup(const opflex::modb::URI& eg);
+
+    /**
      * A vector of Subnet objects
      */
     typedef std::vector<boost::shared_ptr<modelgbp::gbp::Subnet> > 
@@ -176,6 +236,15 @@ public:
     boost::optional<opflex::modb::URI> getGroupForVnid(uint32_t vnid);
 
     /**
+     * Get the multicast IP group configured for an endpoint group.
+     *
+     * @param eg the URI for the endpoint group
+     * @return Multicast IP for the group if any, boost::none otherwise
+     */
+    boost::optional<std::string>
+    getMulticastIPForGroup(const opflex::modb::URI& eg);
+
+    /**
      * Check if an endpoint group exists
      *
      * @param eg the URI for the endpoint group to check
@@ -184,10 +253,9 @@ public:
     bool groupExists(const opflex::modb::URI& eg);
 
     /**
-     * List of L24Classifier objects.
+     * List of PolicyRule objects.
      */
-    typedef std::list<boost::shared_ptr<modelgbp::gbpe::L24Classifier> >
-        rule_list_t;
+    typedef std::list<boost::shared_ptr<PolicyRule> > rule_list_t;
 
     /**
      * Set of URIs.
@@ -220,7 +288,7 @@ public:
                              /* out */ uri_set_t& epgURIs);
 
     /**
-     * Get an ordered list of L24Classifier objects that comprise a contract.
+     * Get an ordered list of PolicyClassifier objects that comprise a contract.
      *
      * @param contractURI URI of contract to look for
      * @param rules List of classifier objects in descending order
@@ -244,10 +312,11 @@ private:
      * State and indices related to a given endpoint group
      */
     struct GroupState {
-        boost::optional<uint32_t> vnid;
+        boost::optional<boost::shared_ptr<modelgbp::gbpe::InstContext> > instContext;
         boost::optional<boost::shared_ptr<modelgbp::gbp::RoutingDomain> > routingDomain;
         boost::optional<boost::shared_ptr<modelgbp::gbp::BridgeDomain> > bridgeDomain;
         boost::optional<boost::shared_ptr<modelgbp::gbp::FloodDomain> > floodDomain;
+        boost::optional<boost::shared_ptr<modelgbp::gbpe::FloodContext> > floodContext;
         typedef boost::unordered_map<opflex::modb::URI,
                                      boost::shared_ptr<modelgbp::gbp::Subnet> > subnet_map_t;
         subnet_map_t subnet_map;
@@ -405,6 +474,16 @@ private:
      * updated
      */
     void notifyEPGDomain(const opflex::modb::URI& egURI);
+
+    /**
+     * Notify policy listeners about an update to a forwarding
+     * domain.
+     *
+     * @param domURI the URI of the domain object that has been
+     * updated
+     */
+    void notifyDomain(opflex::modb::class_id_t cid,
+                      const opflex::modb::URI& domURI);
 
     /**
      * Updates groupPolicyMap and contractMap according to the

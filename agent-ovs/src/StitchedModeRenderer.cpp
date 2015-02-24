@@ -20,10 +20,12 @@ using boost::property_tree::ptree;
 StitchedModeRenderer::StitchedModeRenderer(Agent& agent_)
     : Renderer(agent_), flowManager(agent_), connection(NULL),
       statsManager(&agent_, portMapper), tunnelEpManager(&agent_),
-      uplinkVlan(0), virtualRouter(true), started(false) {
+      tunnelRemotePort(0), uplinkVlan(0),
+      virtualRouter(true), routerAdv(true), started(false) {
     flowManager.SetFlowReader(&flowReader);
     flowManager.SetExecutor(&flowExecutor);
     flowManager.SetPortMapper(&portMapper);
+    flowManager.setJsonCmdExecutor(&jsonCmdExecutor);
 }
 
 StitchedModeRenderer::~StitchedModeRenderer() {
@@ -54,16 +56,21 @@ void StitchedModeRenderer::start() {
     flowManager.SetEncapIface(encapIface);
     flowManager.SetFloodScope(FlowManager::ENDPOINT_GROUP);
     if (encapType == FlowManager::ENCAP_VXLAN ||
-        encapType == FlowManager::ENCAP_IVXLAN)
+        encapType == FlowManager::ENCAP_IVXLAN) {
         flowManager.SetTunnelRemoteIp(tunnelRemoteIp);
-    flowManager.SetVirtualRouter(virtualRouter);
-    flowManager.SetVirtualRouterMac(virtualRouterMac);
+        assert(tunnelRemotePort != 0);
+        flowManager.setTunnelRemotePort(tunnelRemotePort);
+    }
+    flowManager.SetVirtualRouter(virtualRouter, routerAdv, virtualRouterMac);
+    flowManager.SetVirtualDHCP(virtualDHCP, virtualDHCPMac);
     flowManager.SetFlowIdCache(flowIdCache);
+    flowManager.SetEndpointAdv(endpointAdv);
 
     connection = new SwitchConnection(ovsBridgeName);
     portMapper.InstallListenersForConnection(connection);
     flowExecutor.InstallListenersForConnection(connection);
     flowReader.installListenersForConnection(connection);
+    jsonCmdExecutor.installListenersForConnection(connection);
     flowManager.registerConnection(connection);
     flowManager.registerModbListeners();
     connection->Connect(OFP13_VERSION);
@@ -86,6 +93,7 @@ void StitchedModeRenderer::stop() {
     connection->Disconnect();
     flowManager.unregisterModbListeners();
     flowManager.unregisterConnection(connection);
+    jsonCmdExecutor.uninstallListenersForConnection(connection);
     flowReader.uninstallListenersForConnection(connection);
     flowExecutor.UninstallListenersForConnection(connection);
     portMapper.UninstallListenersForConnection(connection);
@@ -113,9 +121,17 @@ void StitchedModeRenderer::setProperties(const ptree& properties) {
     static const std::string UPLINK_VLAN("uplink-vlan");
     static const std::string ENCAP_IFACE("encap-iface");
     static const std::string REMOTE_IP("remote-ip");
+    static const std::string REMOTE_PORT("remote-port");
 
-    static const std::string VIRTUAL_ROUTER("forwarding.virtual-router");
-    static const std::string VIRTUAL_ROUTER_MAC("forwarding.virtual-router-mac");
+    static const std::string VIRTUAL_ROUTER("forwarding.virtual-router.enabled");
+    static const std::string VIRTUAL_ROUTER_MAC("forwarding.virtual-router.mac");
+
+    static const std::string VIRTUAL_ROUTER_RA("forwarding.virtual-router.ipv6.router-advertisement");
+
+    static const std::string VIRTUAL_DHCP("forwarding.virtual-dhcp.enabled");
+    static const std::string VIRTUAL_DHCP_MAC("forwarding.virtual-dhcp.mac");
+
+    static const std::string ENDPOINT_ADV("forwarding.endpoint-advertisements.enabled");
 
     static const std::string FLOWID_CACHE_DIR("flowid-cache-dir");
 
@@ -145,19 +161,30 @@ void StitchedModeRenderer::setProperties(const ptree& properties) {
         uplinkIface = vxlan.get().get<std::string>(UPLINK_IFACE, "");
         uplinkVlan = vxlan.get().get<uint16_t>(UPLINK_VLAN, 0);
         tunnelRemoteIp = vxlan.get().get<std::string>(REMOTE_IP, "");
+        tunnelRemotePort = vxlan.get().get<uint16_t>(REMOTE_PORT, 4789);
         count += 1;
     }
 
     if (count > 1) {
         LOG(WARNING) << "Multiple encapsulation types specified for "
                      << "stitched-mode renderer";
+    } else if (count == 0) {
+        LOG(WARNING) 
+            << "No encapsulation types specified; only local traffic will work";
     }
 
     virtualRouter = properties.get<bool>(VIRTUAL_ROUTER, true);
     virtualRouterMac =
-        properties.get<std::string>(VIRTUAL_ROUTER_MAC, "88:f0:31:b5:12:b5");
+        properties.get<std::string>(VIRTUAL_ROUTER_MAC, "00:22:bd:f8:19:ff");
+    routerAdv = properties.get<bool>(VIRTUAL_ROUTER_RA, true);
+    virtualDHCP = properties.get<bool>(VIRTUAL_DHCP, true);
+    virtualDHCPMac =
+        properties.get<std::string>(VIRTUAL_DHCP_MAC, "00:22:bd:f8:19:ff");
+    endpointAdv = properties.get<bool>(ENDPOINT_ADV, true);
 
     flowIdCache = properties.get<std::string>(FLOWID_CACHE_DIR, "");
+    if (flowIdCache == "")
+        LOG(WARNING) << "No flow ID cache directory specified";
 }
 
 } /* namespace ovsagent */

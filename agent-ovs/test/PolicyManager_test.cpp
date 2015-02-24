@@ -9,12 +9,15 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#include <list>
 #include <boost/test/unit_test.hpp>
 #include <boost/foreach.hpp>
 #include <boost/assign/list_of.hpp>
 #include <modelgbp/dmtree/Root.hpp>
 #include <opflex/modb/Mutator.h>
+#include <modelgbp/gbp/DirectionEnumT.hpp>
 
+#include "logging.h"
 #include "BaseFixture.h"
 #include "Policies.h"
 
@@ -26,6 +29,7 @@ using boost::unordered_set;
 using opflex::modb::Mutator;
 using opflex::modb::URI;
 
+using namespace std;
 using namespace modelgbp;
 using namespace modelgbp::gbp;
 using namespace modelgbp::gbpe;
@@ -72,32 +76,48 @@ public:
         classifier5 = space->addGbpeL24Classifier("classifier5");
         classifier6 = space->addGbpeL24Classifier("classifier6");
 
+        action1 = space->addGbpAllowDenyAction("action1");
+        action1->setAllow(0).setOrder(5);
+        action2 = space->addGbpAllowDenyAction("action2");
+        action2->setAllow(1).setOrder(10);
+
         con1 = space->addGbpContract("contract1");
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule1")
-                ->setOrder(15)
-                .addGbpRuleToClassifierRSrc(classifier1->getURI().toString());
+            ->setOrder(15).setDirection(DirectionEnumT::CONST_IN)
+            .addGbpRuleToClassifierRSrc(classifier1->getURI().toString());
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule1")
-                ->addGbpRuleToClassifierRSrc(classifier4->getURI().toString());
+            ->addGbpRuleToClassifierRSrc(classifier4->getURI().toString());
+
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule2")
-                ->setOrder(10)
-                .addGbpRuleToClassifierRSrc(classifier2->getURI().toString());
+            ->setOrder(10).setDirection(DirectionEnumT::CONST_IN)
+            .addGbpRuleToClassifierRSrc(classifier2->getURI().toString());
+
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule3")
-                ->setOrder(25)
-                .addGbpRuleToClassifierRSrc(classifier5->getURI().toString());
+            ->setOrder(25).setDirection(DirectionEnumT::CONST_IN)
+            .addGbpRuleToClassifierRSrc(classifier5->getURI().toString());
+        con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule3")
+            ->addGbpRuleToActionRSrc(action1->getURI().toString());
+        con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule3")
+            ->addGbpRuleToActionRSrc(action2->getURI().toString());
+
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule4")
-                ->setOrder(5)
-                .addGbpRuleToClassifierRSrc(classifier6->getURI().toString());
+            ->setOrder(5).setDirection(DirectionEnumT::CONST_IN)
+            .addGbpRuleToClassifierRSrc(classifier6->getURI().toString());
+
         con1->addGbpSubject("1_subject2")->addGbpRule("1_2_rule1")
-                ->addGbpRuleToClassifierRSrc(classifier3->getURI().toString());
+            ->setDirection(DirectionEnumT::CONST_IN)
+            .addGbpRuleToClassifierRSrc(classifier3->getURI().toString());
 
         con2 = space->addGbpContract("contract2");
         con2->addGbpSubject("2_subject1")->addGbpRule("2_1_rule1")
-              ->addGbpRuleToClassifierRSrc(classifier1->getURI().toString());
+            ->setDirection(DirectionEnumT::CONST_OUT)
+            .addGbpRuleToClassifierRSrc(classifier1->getURI().toString());
 
         eg1 = space->addGbpEpGroup("group1");
         eg1->addGbpEpGroupToNetworkRSrc()
             ->setTargetSubnets(subnetsfd->getURI());
-        eg1->addGbpeInstContext()->setEncapId(1234);
+        eg1->addGbpeInstContext()->setEncapId(1234)
+            .setMulticastGroupIP("224.1.1.1");
         eg1->addGbpEpGroupToProvContractRSrc(con1->getURI().toString());
         eg1->addGbpEpGroupToProvContractRSrc(con2->getURI().toString());
 
@@ -138,6 +158,9 @@ public:
     shared_ptr<L24Classifier> classifier4;
     shared_ptr<L24Classifier> classifier5;
     shared_ptr<L24Classifier> classifier6;
+
+    shared_ptr<AllowDenyAction> action1;
+    shared_ptr<AllowDenyAction> action2;
 
     shared_ptr<Contract> con1;
     shared_ptr<Contract> con2;
@@ -189,6 +212,12 @@ BOOST_FIXTURE_TEST_CASE( group, PolicyFixture ) {
     optional<uint32_t> vnid = pm.getVnidForGroup(eg1->getURI());
     BOOST_CHECK(vnid.get() == 1234);
 
+    optional<string> mcastIp = pm.getMulticastIPForGroup(eg1->getURI());
+    BOOST_CHECK(mcastIp.get() == "224.1.1.1");
+
+    mcastIp = pm.getMulticastIPForGroup(eg2->getURI());
+    BOOST_CHECK(!mcastIp);
+
     Mutator mutator(framework, "policyreg");
     eg1->remove();
     mutator.commit();
@@ -227,6 +256,15 @@ BOOST_FIXTURE_TEST_CASE( group_contract, PolicyFixture ) {
 }
 
 BOOST_FIXTURE_TEST_CASE( group_contract_update, PolicyFixture ) {
+    PolicyManager& pm = agent.getPolicyManager();
+
+    /* Wait for things to settle down */
+    PolicyManager::uri_set_t egs;
+    WAIT_FOR_DO(egs.size() == 2, 500,
+        egs.clear(); pm.getContractProviders(con1->getURI(), egs));
+    WAIT_FOR_DO(egs.size() == 1, 500,
+        egs.clear(); pm.getContractConsumers(con1->getURI(), egs));
+
     /* remove eg1, interchange roles of eg2 and eg3 w.r.t con1 */
     Mutator mutator(framework, "policyreg");
 
@@ -241,35 +279,56 @@ BOOST_FIXTURE_TEST_CASE( group_contract_update, PolicyFixture ) {
     eg1->remove();
     mutator.commit();
 
-    PolicyManager& pm = agent.getPolicyManager();
     WAIT_FOR(pm.groupExists(eg1->getURI()) == false, 500);
 
-    PolicyManager::uri_set_t egs;
-    WAIT_FOR_DO(egs.size() == 1, 500,
-            egs.clear(); pm.getContractProviders(con1->getURI(), egs));
-    BOOST_CHECK(checkContains(egs, eg2->getURI()));
+    WAIT_FOR_DO(egs.size() == 1 && checkContains(egs, eg2->getURI()),
+        500,
+        egs.clear(); pm.getContractProviders(con1->getURI(), egs));
 
     egs.clear();
-    WAIT_FOR_DO(egs.size() == 1, 500,
-            egs.clear(); pm.getContractConsumers(con1->getURI(), egs));
-    BOOST_CHECK(checkContains(egs, eg3->getURI()));
+    WAIT_FOR_DO(egs.size() == 1 && checkContains(egs, eg3->getURI()),
+        500,
+        egs.clear(); pm.getContractConsumers(con1->getURI(), egs));
 
     egs.clear();
     pm.getContractProviders(con2->getURI(), egs);
     WAIT_FOR_DO(egs.empty(), 500,
-            egs.clear(); pm.getContractProviders(con2->getURI(), egs));
+        egs.clear(); pm.getContractProviders(con2->getURI(), egs));
 }
 
 static bool checkRules(const PolicyManager::rule_list_t& lhs,
-        const PolicyManager::rule_list_t& rhs) {
+                       const list<shared_ptr<L24Classifier> >& rhs,
+                       const list<bool>& rhs_allow,
+                       uint8_t dir) {
     PolicyManager::rule_list_t::const_iterator li = lhs.begin();
-    PolicyManager::rule_list_t::const_iterator ri = rhs.begin();
-    while (li != lhs.end() && ri != rhs.end() &&
-           (*li)->getURI() == (*ri)->getURI()) {
+    list<shared_ptr<L24Classifier> >::const_iterator ri = rhs.begin();
+    list<bool>::const_iterator ai = rhs_allow.begin();
+    bool matches = true;
+    while (true) {
+        if (li == lhs.end() || ri == rhs.end() || ai == rhs_allow.end())
+            break;
+
+        if (!((*li)->getL24Classifier()->getURI() == (*ri)->getURI() &&
+              (*li)->getAllow() == *ai &&
+              (*li)->getDirection() == dir)) {
+            LOG(INFO) << "\nExpected:\n" 
+                       << (*ri)->getURI()
+                       << ", " << *ai
+                       << ", " << dir
+                       << "\nGot     :\n" 
+                       << (*li)->getL24Classifier()->getURI()
+                       << ", " << (*li)->getAllow()
+                       << ", " << (*li)->getDirection();
+            matches = false;
+        }
+
         ++li;
         ++ri;
+        ++ai;
     }
-    return li == lhs.end() && ri == rhs.end();
+
+    return matches && li == lhs.end() && 
+        ri == rhs.end() && ai == rhs_allow.end();
 }
 
 BOOST_FIXTURE_TEST_CASE( contract_rules, PolicyFixture ) {
@@ -283,11 +342,15 @@ BOOST_FIXTURE_TEST_CASE( contract_rules, PolicyFixture ) {
             rules.clear(); pm.getContractRules(con1->getURI(), rules));
     BOOST_CHECK(
         checkRules(rules,
-            list_of(classifier6)(classifier2)(classifier1)(classifier4)
-                (classifier5)(classifier3)) ||
+                   list_of(classifier6)(classifier2)(classifier1)(classifier4)
+                   (classifier5)(classifier3),
+                   list_of(true)(true)(true)(true)(false)(true),
+                   DirectionEnumT::CONST_IN) ||
         checkRules(rules,
-            list_of(classifier3)(classifier6)(classifier2)(classifier1)(classifier4)
-                (classifier5)));
+                   list_of(classifier3)(classifier6)(classifier2)(classifier1)
+                   (classifier4)(classifier5),
+                   list_of(true)(true)(true)(true)(true)(false),
+                   DirectionEnumT::CONST_IN));
 
     /*
      *  remove classifier2 & subject2
@@ -308,9 +371,12 @@ BOOST_FIXTURE_TEST_CASE( contract_rules, PolicyFixture ) {
 
     rules.clear();
     WAIT_FOR_DO(rules.size() == 4, 500,
-            rules.clear(); pm.getContractRules(con1->getURI(), rules));
+        rules.clear(); pm.getContractRules(con1->getURI(), rules));
     BOOST_CHECK(checkRules(rules,
-            list_of(classifier6)(classifier4)(classifier1)(classifier5)));
+                           list_of(classifier6)(classifier4)
+                           (classifier1)(classifier5),
+                           list_of(true)(true)(true)(false),
+                           DirectionEnumT::CONST_IN));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

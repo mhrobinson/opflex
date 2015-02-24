@@ -17,6 +17,7 @@
 #include "PortMapper.h"
 #include "StatsManager.h"
 #include "TunnelEpManager.h"
+#include "JsonCmdExecutor.h"
 
 #pragma once
 #ifndef OVSAGENT_STITCHEDMODERENDERER_H
@@ -68,15 +69,21 @@ private:
     SwitchConnection* connection;
     StatsManager statsManager;
     TunnelEpManager tunnelEpManager;
+    JsonCmdExecutor jsonCmdExecutor;
 
     std::string ovsBridgeName;
     FlowManager::EncapType encapType;
     std::string encapIface;
     std::string tunnelRemoteIp;
+    uint16_t tunnelRemotePort;
     std::string uplinkIface;
     uint16_t uplinkVlan;
     bool virtualRouter;
     std::string virtualRouterMac;
+    bool routerAdv;
+    bool endpointAdv;
+    bool virtualDHCP;
+    std::string virtualDHCPMac;
     std::string flowIdCache;
 
     bool started;

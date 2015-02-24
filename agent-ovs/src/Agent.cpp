@@ -28,6 +28,10 @@ using opflex::ofcore::OFFramework;
 using boost::shared_ptr;
 using boost::property_tree::ptree;
 using boost::optional;
+using boost::asio::io_service;
+using boost::bind;
+using boost::ref;
+using boost::thread;
 using std::make_pair;
 
 Agent::Agent(OFFramework& framework_) 
@@ -70,12 +74,12 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
     optional<const ptree&> endpointSource = 
         properties.get_child_optional(ENDPOINT_SOURCE_PATH);
 
-    if (!endpointSource) {
-        LOG(ERROR) << "No endpoint source found in configuration.";
-    } else {
+    if (endpointSource) {
         BOOST_FOREACH(const ptree::value_type &v, endpointSource.get())
             endpointSourcePaths.insert(v.second.data());
     }
+    if (endpointSourcePaths.size() == 0)
+        LOG(ERROR) << "No endpoint sources found in configuration.";
 
     optional<std::string> opflexName = 
         properties.get_optional<std::string>(OPFLEX_NAME);
@@ -92,9 +96,7 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
 
     optional<const ptree&> peers = 
         properties.get_child_optional(OPFLEX_PEERS);
-    if (!peers) {
-        LOG(ERROR) << "No Opflex peers found in configuration";
-    } else {
+    if (peers) {
         BOOST_FOREACH(const ptree::value_type &v, peers.get()) {
             optional<std::string> h = 
                 v.second.get_optional<std::string>(HOSTNAME);
@@ -105,6 +107,8 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
             }
         }
     }
+    if (opflexPeers.size() == 0)
+        LOG(ERROR) << "No Opflex peers found in configuration";
 
     sslMode = properties.get<std::string>(OPFLEX_SSL_MODE, "disabled");
     sslCaStore = properties.get<std::string>(OPFLEX_SSL_CA_STORE,
@@ -129,6 +133,8 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
             r->setProperties(rtree.get());
         }
     }
+    if (renderers.size() == 0)
+        LOG(ERROR) << "No renderers configured; no policy will be applied";
 }
 
 void Agent::start() {
@@ -165,7 +171,7 @@ void Agent::start() {
         r->start();
     }
 
-    io_service_thread = new boost::thread(boost::ref(*this));
+    io_service_thread = new thread(bind(&io_service::run, ref(agent_io)));
 
     BOOST_FOREACH(const host_t& h, opflexPeers)
         framework.addPeer(h.first, h.second);
@@ -194,10 +200,6 @@ void Agent::stop() {
     }
 
     started = false;
-}
-
-void Agent::operator()() {
-    agent_io.run();
 }
 
 } /* namespace ovsagent */

@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include "opflex/logging/OFLogHandler.h"
 #include "opflex/c/ofloghandler_c.h"
 
@@ -16,42 +22,66 @@ using opflex::logging::OFLogHandler;
 
 static int getLevel(OFLogHandler::Level level) {
     switch (level) {
-    case OFLogHandler::INFO:
-        return OF_LOG_INFO;
-        break;
-    case OFLogHandler::WARNING:
-        return OF_LOG_WARNING;
+    case OFLogHandler::FATAL:
+        return LOG_FATAL;
         break;
     case OFLogHandler::ERROR:
-        return OF_LOG_ERROR;
+        return LOG_ERROR;
         break;
-    case OFLogHandler::FATAL:
-        return OF_LOG_FATAL;
+    case OFLogHandler::WARNING:
+        return LOG_WARNING;
         break;
-    case OFLogHandler::DEBUG:
+    case OFLogHandler::INFO:
+        return LOG_INFO;
+        break;
+    case OFLogHandler::DEBUG1:
+        return LOG_DEBUG1;
+        break;
+    case OFLogHandler::DEBUG2:
+        return LOG_DEBUG2;
+        break;
+    case OFLogHandler::DEBUG3:
+        return LOG_DEBUG3;
+        break;
+    case OFLogHandler::DEBUG4:
+        return LOG_DEBUG4;
+        break;
+    case OFLogHandler::TRACE:
     default:
-        return OF_LOG_DEBUG;
+        return LOG_TRACE;
         break;
     }
 }
 
 static OFLogHandler::Level getLevel(int level) {
     switch (level) {
-    case OF_LOG_INFO:
+    case LOG_INFO:
         return OFLogHandler::INFO;
         break;
-    case OF_LOG_WARNING:
+    case LOG_WARNING:
         return OFLogHandler::WARNING;
         break;
-    case OF_LOG_ERROR:
+    case LOG_ERROR:
         return OFLogHandler::ERROR;
         break;
-    case OF_LOG_FATAL:
+    case LOG_FATAL:
         return OFLogHandler::FATAL;
         break;
-    case OF_LOG_DEBUG:
+    case LOG_DEBUG1:
+        return OFLogHandler::DEBUG1;
+        break;
+    case LOG_DEBUG2:
+        return OFLogHandler::DEBUG2;
+        break;
+    case LOG_DEBUG3:
+        return OFLogHandler::DEBUG3;
+        break;
+    case LOG_DEBUG4:
+        return OFLogHandler::DEBUG4;
+        break;
+    case LOG_TRACE:
     default:
-        return OFLogHandler::DEBUG;
+        return OFLogHandler::TRACE;
         break;
     }
 }
@@ -60,7 +90,7 @@ static OFLogHandler::Level getLevel(int level) {
 class COFLogHandler : public OFLogHandler {
 public:
     COFLogHandler(Level level, loghandler_p callback_)
-        : OFLogHandler(level), callback(callback_) {}
+        : OFLogHandler(DEBUG1), callback(callback_) {}
 
     virtual ~COFLogHandler() {}
 

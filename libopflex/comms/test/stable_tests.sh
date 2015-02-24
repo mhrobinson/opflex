@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/bash -x
 
 CATEGORY=${1:-STABLE}
 ulimit -c unlimited
 
 # Timeout.
-declare -i timeout=${2:-60}
+declare -i timeout=${2:-120}
 # Interval between checks if the process is still alive.
 declare -i interval=${3:-5}
 # Delay between posting the SIGTERM signal and destroying the process by SIGKILL.
@@ -44,8 +44,5 @@ fi
 ./comms_test --catch_system_errors=no --run_test="${TEST_PATTERN}"
 RET_VAL=$?
 kill -9 ${BG_WATCHER} &> /dev/null
-
-# FIXME: try to parse core pattern
-find . -name '*core*' -type f -exec echo Found possible core file: '{}' \;
 
 exit ${RET_VAL}

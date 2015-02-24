@@ -6,6 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/internal/comms.hpp>
 #include <yajr/rpc/methods.hpp>
 #include <yajr/rpc/rpc.hpp>
@@ -13,7 +19,8 @@
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 
-namespace yajr { namespace rpc {
+namespace yajr {
+    namespace rpc {
 
 Message::PayloadKeys Message::kPayloadKey = {
     "params",
@@ -41,29 +48,124 @@ bool operator< (rapidjson::Value const & l, rapidjson::Value const & r) {
     return (lh < rh);
 }
 
-bool OutboundMessage::Accept(yajr::rpc::SendHandler& handler) {
+static ::yajr::comms::internal::CommunicationPeer const * latestCp = NULL;
 
-    LOG(DEBUG);
+bool LocalIdentifier::emitId(yajr::rpc::SendHandler & h) const {
 
-    return handler.StartObject()
+    VLOG(4);
 
-        && handler.String("id")
-        && emitId(handler)
+    ::yajr::comms::internal::CommunicationPeer const * cP = latestCp;
 
-        && emitMethod(handler)
+    assert(cP->__checkInvariants());
 
-        && handler.String(getPayloadKey())
-        && payloadGenerator_(handler)
+    if (!h.StartArray()) {
 
-        && handler.EndObject()
+        assert(cP->__checkInvariants());
 
-    ;
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+
+    if (!h.String(requestMethod())) {
+
+        assert(cP->__checkInvariants());
+
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+
+    if (!h.Uint64(id_)) {
+
+        assert(cP->__checkInvariants());
+
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+
+    if (!h.EndArray()) {
+
+        assert(cP->__checkInvariants());
+
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+
+    return true;
 
 }
 
-void OutboundMessage::send() {
+bool RemoteIdentifier::emitId(yajr::rpc::SendHandler & h) const {
 
-    LOG(DEBUG);
+    VLOG(4);
+
+    ::yajr::comms::internal::CommunicationPeer const * cP = latestCp;
+
+    assert(cP->__checkInvariants());
+
+    bool ok = id_.Accept(h);
+
+    assert(cP->__checkInvariants());
+
+    return ok;
+}
+
+bool OutboundMessage::Accept(yajr::rpc::SendHandler& handler) {
+
+    VLOG(5);
+
+    ::yajr::comms::internal::CommunicationPeer const * cP = latestCp;
+
+    assert(cP->__checkInvariants());
+    if (!handler.StartObject()) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+    if (!handler.String("id")) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+    if (!emitId(handler)) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+    assert(cP->__checkInvariants());
+    if (!emitMethod(handler)) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+    if (!handler.String(getPayloadKey())) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+    assert(cP->__checkInvariants());
+    if (!payloadGenerator_(handler)) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+    if (!handler.EndObject()) {
+        assert(cP->__checkInvariants());
+        return false;
+    }
+
+    return true;
+
+}
+
+bool OutboundMessage::send() {
+
+    VLOG(5);
 
     ::yajr::comms::internal::CommunicationPeer const * cP =
         dynamic_cast< ::yajr::comms::internal::CommunicationPeer const * >
@@ -74,22 +176,53 @@ void OutboundMessage::send() {
             "to a proper communication peer "
             "before outbound messages are sent");
 
-    Accept(cP->getWriter());
+    unsigned char connected = cP->connected_;
+
+    if (!connected) {
+        cP->onError(UV_ENOTCONN);
+
+     // assert(connected);
+
+        return false;
+    }
+
+    assert(cP->__checkInvariants());
+
+    latestCp = cP;
+    bool ok = Accept(cP->getWriter());
+
+    if (!ok) {
+        LOG(ERROR)
+            << cP
+            << " problem Accept()ing a message"
+        ;
+
+        assert(ok);
+    }
+
+    assert(cP->__checkInvariants());
 
     cP->delimitFrame();
+
+    assert(cP->__checkInvariants());
+
     cP->write();
+
+    assert(cP->__checkInvariants());
+
+    return true;
 
 }
 
-void OutboundRequest::send(
+bool OutboundRequest::send(
         ::yajr::Peer const & peer
     ) {
 
-    LOG(DEBUG);
+    VLOG(3);
 
     setPeer(&peer);
 
-    send();
+    return send();
 }
 
 InboundResponse::InboundResponse(
@@ -199,4 +332,6 @@ MethodName method::endpoint_unresolve("endpoint_unresolve");
 MethodName method::endpoint_update("endpoint_update");
 MethodName method::state_report("state_report");
 
-}}
+} /* yajr::rpc namespace */
+} /* yajr namespace */
+

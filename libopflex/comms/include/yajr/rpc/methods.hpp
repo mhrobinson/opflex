@@ -14,6 +14,8 @@
 #include <yajr/rpc/rpc.hpp>
 #include <yajr/yajr.hpp>
 
+#include <opflex/logging/internal/logging.hpp>
+
 #include <rapidjson/document.h>
 
 namespace yajr {
@@ -37,7 +39,7 @@ namespace yajr {
             extern MethodName endpoint_update;
             extern MethodName state_report;
 
-        }
+        } /* yajr::rpc::method namespace */
 
         template <MethodName * M>
         class OutReq : public yajr::rpc::OutboundRequest {
@@ -81,7 +83,9 @@ namespace yajr {
                 )
                 : InboundRequest(peer, params, id)
                 {
-                    LOG(DEBUG) << M->s;
+                    VLOG(5)
+                        << M->s
+                    ;
                 }
 
             virtual void process() const;
@@ -103,7 +107,9 @@ namespace yajr {
                 )
                 : InboundResult(peer, params, id)
                 {
-                    LOG(DEBUG) << M->s;
+                    VLOG(5)
+                        << M->s
+                    ;
                 }
 
             virtual void process() const;
@@ -122,15 +128,18 @@ namespace yajr {
                 )
                 : InboundError(peer, params, id)
                 {
-                    LOG(DEBUG) << M->s;
+                    VLOG(3)
+                        << M->s
+                    ;
                 }
 
             virtual void process() const;
 
         };
 
-    }
+    } /* yajr::rpc namespace */
 
-}
+} /* yajr namespace */
 
 #endif /* _____COMMS__INCLUDE__YAJR__RPC__METHODS_HPP */
+

@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <boost/scoped_ptr.hpp>
 
 #include "opflex/engine/internal/OpflexConnection.h"
@@ -42,7 +48,10 @@ OpflexConnection::OpflexConnection(HandlerFactory& handlerFactory)
     : handler(handlerFactory.newHandler(this)) 
 #ifdef SIMPLE_RPC
     ,buffer(new std::stringstream()) 
+#else
+    ,requestId(1)
 #endif
+    ,connGeneration(0)
 {
     uv_mutex_init(&queue_mutex);
     connect();
@@ -75,8 +84,9 @@ void OpflexConnection::connect() {}
 
 void OpflexConnection::cleanup() {
     util::LockGuard guard(&queue_mutex);
+    connGeneration += 1;
     while (write_queue.size() > 0) {
-        delete write_queue.front();
+        delete write_queue.front().first;
         write_queue.pop_front();
     }
 }
@@ -331,7 +341,7 @@ void OpflexConnection::doWrite(OpflexMessage* message) {
             yajr::rpc::MethodName method(message->getMethod().c_str());
             OutboundRequest outm(wrapper,
                                  &method,
-                                 0,
+                                 requestId++,
                                  getPeer());
             outm.send();
         }
@@ -359,11 +369,17 @@ void OpflexConnection::doWrite(OpflexMessage* message) {
 void OpflexConnection::processWriteQueue() {
     util::LockGuard guard(&queue_mutex);
     while (write_queue.size() > 0) {
-        scoped_ptr<OpflexMessage> message(write_queue.front());
+        const write_queue_item_t& qi = write_queue.front();
+        // Avoid writing messages from a previous reconnect attempt
+        if (qi.second < connGeneration) {
+            LOG(DEBUG) << "Ignoring " << qi.first->getMethod()
+                       << " of type " << qi.first->getType();
+            continue;
+        }
+        scoped_ptr<OpflexMessage> message(qi.first);
         write_queue.pop_front();
         doWrite(message.get());
     }
-
 }
 
 void OpflexConnection::sendMessage(OpflexMessage* message, bool sync) {
@@ -372,7 +388,7 @@ void OpflexConnection::sendMessage(OpflexMessage* message, bool sync) {
         doWrite(message);
     } else {
         util::LockGuard guard(&queue_mutex);
-        write_queue.push_back(message);
+        write_queue.push_back(std::make_pair(message, connGeneration));
     }
     messagesReady();
 }

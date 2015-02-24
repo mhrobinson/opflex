@@ -29,7 +29,7 @@ namespace StateChange {
         TRANSPORT_FAILURE,
         DELETE,
     };
-};
+}
 
 /**
  * @brief A yajr communication peer.
@@ -202,7 +202,7 @@ struct Peer {
     virtual void startKeepAlive(
             uint64_t                begin             = 100,
             uint64_t                repeat            = 1250,
-            uint64_t                interval          = 2500
+            uint64_t                interval          = 9000
     ) = 0;
 
     /**
@@ -290,8 +290,6 @@ struct Listener {
                  /**< [in] libuv loop selector for the accepted passive peers */
     );
 
-//    transport::Ctx 
-
     /**
      * @brief perform an asynchronous delete
      *
@@ -307,6 +305,7 @@ struct Listener {
     ~Listener() {}
 };
 
-}
+} /* yajr namespace */
 
 #endif /* _INCLUDE__YAJR__YAJR_HPP */
+

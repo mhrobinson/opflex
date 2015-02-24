@@ -10,6 +10,8 @@
  */
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <boost/unordered_set.hpp>
 #include <boost/unordered_map.hpp>
@@ -249,6 +251,272 @@ public:
         return attributes;
     }
 
+    /**
+     * Base class for DHCP configuration
+     */
+    class DHCPConfig {
+    public:
+        /**
+         * Clear the list of dns servers
+         */
+        void clearDnsServers() {
+            dnsServers.clear();
+        }
+
+        /**
+         * Add a DNS server to be returned to the endpoint using DHCP
+         *
+         * @param dnsServerIp the IP address for the dns server
+         */
+        void addDnsServer(const std::string& dnsServerIp) {
+            dnsServers.push_back(dnsServerIp);
+        }
+
+        /**
+         * Get the list of DNS servers for this dhcp config
+         *
+         * @return a vector of DNS server IP addresses
+         */
+        const std::vector<std::string>& getDnsServers() const {
+            return dnsServers;
+        }
+    private:
+        std::vector<std::string> dnsServers;
+    };
+
+    /**
+     * Represent a configuration to be passed to the endpoint through
+     * the virtual distributed DHCPv4 server.
+     */
+    class DHCPv4Config : public DHCPConfig {
+    public:
+        /**
+         * Get the IP address to return for DHCP requests from this
+         * endpoint.  Must be one of the IP addresses listed in the IP
+         * address section for the endpoint.
+         *
+         * @return the IP address
+         */
+        const boost::optional<std::string>& getIpAddress() const {
+            return ipAddress;
+        }
+
+        /**
+         * Set the IP address to return for DHCP requests from this
+         * endpoint
+         *
+         * @param ipAddress the IP address
+         */
+        void setIpAddress(const std::string& ipAddress) {
+            this->ipAddress = ipAddress;
+        }
+
+        /**
+         * Get the subnet prefix length to return for DHCP requests
+         * from this endpoint.
+         *
+         * @return the prefix length
+         */
+        const boost::optional<uint8_t> getPrefixLen() const {
+            return prefixLen;
+        }
+
+        /**
+         * Set the subnet prefix length to return for DHCP requests
+         * from this endpoint
+         *
+         * @param prefixLen the prefix length
+         */
+        void setPrefixLen(uint8_t prefixLen) {
+            this->prefixLen = prefixLen;
+        }
+
+        /**
+         * Clear the list of routers
+         */
+        void clearRouters() {
+            routers.clear();
+        }
+
+        /**
+         * Add a router to be returned to the endpoint using DHCP
+         *
+         * @param routerIp the IP address for the router
+         */
+        void addRouter(const std::string& routerIp) {
+            routers.push_back(routerIp);
+        }
+
+        /**
+         * Get the list of routers for this dhcp config
+         *
+         * @return a vector of router IP addresses
+         */
+        const std::vector<std::string>& getRouters() const {
+            return routers;
+        }
+
+        /**
+         * Get the domain to return for DHCP requests from this
+         * endpoint.
+         *
+         * @return the domain name
+         */
+        const boost::optional<std::string>& getDomain() const {
+            return domain;
+        }
+
+        /**
+         * Set the domain to return for DHCP requests from this
+         * endpoint
+         *
+         * @param domain the domain name
+         */
+        void setDomain(const std::string& domain) {
+            this->domain = domain;
+        }
+
+        /**
+         * A static route to be returned to the endpoint using DHCP.
+         * The first element of the pair is the IP address destination
+         * and the second element is the next hop in the path.
+         */
+        class static_route_t {
+        public:
+            /**
+             * Construct a new static route
+             */
+            static_route_t(const std::string& dest_,
+                           uint8_t prefixLen_,
+                           const std::string& nextHop_)
+                : dest(dest_), prefixLen(prefixLen_), nextHop(nextHop_) {}
+
+            /**
+             * The destination IP or network address
+             */
+            std::string dest;
+
+            /**
+             * The prefix length for the subnet
+             */
+            uint8_t prefixLen;
+
+            /**
+             * The IP address for the next hop
+             */
+            std::string nextHop;
+        };
+
+        /**
+         * Clear the list of static routes
+         */
+        void clearStaticRoutes() {
+            staticRoutes.clear();
+        }
+
+        /**
+         * Add a static route to return to the endpoint using DHCP
+         *
+         * @param dest the destination network
+         * @param prefixLen the prefix length for the route
+         * @param nextHop the next hop IP for the route
+         */
+        void addStaticRoute(const std::string& dest,
+                            uint8_t prefixLen,
+                            const std::string& nextHop) {
+            staticRoutes.push_back(static_route_t(dest, prefixLen, nextHop));
+        }
+
+        /**
+         * Get the list of static routes to return to the endpoint
+         * using DHCP.
+         *
+         * @return a vector of static routes
+         */
+        const std::vector<static_route_t>& getStaticRoutes() const {
+            return staticRoutes;
+        }
+
+    private:
+        boost::optional<std::string> ipAddress;
+        boost::optional<uint8_t> prefixLen;
+        std::vector<std::string> routers;
+        boost::optional<std::string> domain;
+        std::vector<static_route_t> staticRoutes;
+    };
+
+    /**
+     * Represent a configuration to be passed to the endpoint through
+     * the virtual distributed DHCPv6 server.
+     */
+    class DHCPv6Config : public DHCPConfig {
+    public:
+        /**
+         * Clear the DNS search list
+         */
+        void clearSearchList() {
+            searchList.clear();
+        }
+
+        /**
+         * Add a DNS search list entry to be returned to the endpoint
+         * using DHCP
+         *
+         * @param searchListEntry the IP address for the dns server
+         */
+        void addSearchListEntry(const std::string& searchListEntry) {
+            searchList.push_back(searchListEntry);
+        }
+
+        /**
+         * Get the list of search domains
+         *
+         * @return a vector of hostnames
+         */
+        const std::vector<std::string>& getSearchList() const {
+            return searchList;
+        }
+
+    private:
+        std::vector<std::string> searchList;
+    };
+
+    /**
+     * Add a DHCPv4 configuration object.
+     *
+     * @param dhcpConfig the DHCP config to add
+     */
+    void setDHCPv4Config(const DHCPv4Config& dhcpConfig) {
+        this->dhcpv4Config = dhcpConfig;
+    }
+
+    /**
+     * Get the DHCPv4 configuration
+     *
+     * @return the DHCPv4Config object
+     */
+    const boost::optional<DHCPv4Config>& getDHCPv4Config() const {
+        return dhcpv4Config;
+    }
+
+    /**
+     * Add a DHCPv6 configuration object.
+     *
+     * @param dhcpConfig the DHCP config to add
+     */
+    void setDHCPv6Config(const DHCPv6Config& dhcpConfig) {
+        this->dhcpv6Config = dhcpConfig;
+    }
+
+    /**
+     * Get the DHCPv6 configuration
+     *
+     * @return the DHCPv6Config object
+     */
+    const boost::optional<DHCPv6Config>& getDHCPv6Config() const {
+        return dhcpv6Config;
+    }
+
 private:
     std::string uuid;
     boost::optional<opflex::modb::MAC> mac;
@@ -258,6 +526,8 @@ private:
     boost::optional<std::string> interfaceName;
     bool promiscuousMode;
     attr_map_t attributes;
+    boost::optional<DHCPv4Config> dhcpv4Config;
+    boost::optional<DHCPv6Config> dhcpv6Config;
 };
 
 /**

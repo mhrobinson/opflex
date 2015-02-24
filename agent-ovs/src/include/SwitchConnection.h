@@ -93,7 +93,7 @@ public:
     /**
      * Returns true if connected to the daemon and the switch.
      */
-    bool IsConnected();
+    virtual bool IsConnected();
 
     /**
      * Register handler for on-connect events.
@@ -149,6 +149,11 @@ public:
      * Returns the OpenFlow protocol version being used by the connection.
      */
     virtual ofp_version GetProtocolVersion();
+
+    /**
+     * Get the name of switch that this connection is for.
+     */
+    std::string getSwitchName();
 
     /** Interface: Boost thread */
     void operator()();

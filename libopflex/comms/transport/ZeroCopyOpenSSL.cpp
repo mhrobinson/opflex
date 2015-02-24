@@ -6,6 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/transport/ZeroCopyOpenSSL.hpp>
 
 #include <yajr/internal/comms.hpp>
@@ -67,7 +73,8 @@ IF_SSL_ERROR(...)                                                 \
           ___firstErr = 0                                                       \
         )
 
-namespace yajr { namespace transport {
+namespace yajr {
+    namespace transport {
 
 using namespace yajr::comms::internal;
 
@@ -91,7 +98,9 @@ struct Cb< ZeroCopyOpenSSL >::StaticHelpers {
 ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
         CommunicationPeer const * peer) {
 
-    LOG(DEBUG) << peer;
+    VLOG(5)
+        << peer
+    ;
 
     /* we have to process the decrypted data, if any is available */
 
@@ -111,7 +120,7 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
          * bound */
         tryRead = std::min<size_t>(pending, 24576);
 
-        LOG(DEBUG)
+        VLOG(4)
             << peer
             << " has "
             << pending
@@ -140,23 +149,37 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
 #endif
 
         if (nread > 0) {
-            LOG(DEBUG)
+            VLOG(6)
                 << peer
                 << " just decrypted "
                 << nread
                 << " bytes into buffer starting @"
                 << reinterpret_cast<void*>(buffer)
-                << " ["
+                << " ("
                 << std::string(buffer, nread)
-                << "]"
+                << ")"
             ;
             peer->readBuffer(buffer, nread, true);
             totalRead += nread;
+        } else {
+            VLOG(2)
+                << peer
+                << " nread = "
+                << nread
+                << " RETRY="
+                << BIO_should_retry     (&e->bioSSL_)
+                << " R="
+                << BIO_should_read      (&e->bioSSL_)
+                << " W="
+                << BIO_should_write     (&e->bioSSL_)
+                << " S="
+                << BIO_should_io_special(&e->bioSSL_)
+            ;
         }
 
 #ifdef WE_COULD_ALWAYS_CHECK_FOR_PENDING_DATA
         if (nread < tryRead) {
-            LOG(DEBUG)
+            VLOG(3)
                 << peer
                 << " Expected to decrypt "
                 << tryRead
@@ -179,7 +202,7 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
         const_cast<CommunicationPeer *>(peer)->onDisconnect();
     }
 
-    LOG(DEBUG)
+    VLOG(totalRead ? 4 : 3)
         << peer
         << " Returning: "
         << (totalRead ?: nread)
@@ -192,16 +215,22 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(
 ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
         CommunicationPeer const * peer) {
 
-    LOG(DEBUG) << peer;
+    VLOG(5)
+        << peer
+    ;
 
     assert(!peer->pendingBytes_);
     if (peer->pendingBytes_) {
+        VLOG(3)
+            << peer
+            << " has already got pending bytes. Should have not tried!"
+        ;
         return 0;
     }
 
     /* we have to encrypt the plaintext data, if any is available */
     if (!peer->s_.deque_.size()) {
-        LOG(DEBUG)
+        VLOG(4)
             << peer
             << " has no data to send"
         ;
@@ -213,12 +242,13 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
 
     ssize_t totalWrite = 0;
     ssize_t nwrite = 0;
-    size_t tryWrite;
+    ssize_t tryWrite;
 
     std::vector<iovec> iovIn =
         more::get_iovec(
                 peer->s_.deque_.begin(),
-                peer->s_.deque_.end()
+                peer->s_.deque_.end(),
+                std::forward_iterator_tag()
         );
 
     std::vector<iovec>::iterator iovInIt;
@@ -234,7 +264,39 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
                 tryWrite);
 
         if (nwrite > 0) {
+
             totalWrite += nwrite;
+
+            VLOG(5)
+                << peer
+                << " nwrite = "
+                << nwrite
+                << " tryWrite = "
+                << tryWrite
+                << " totalWrite = "
+                << totalWrite
+            ;
+
+        } else {
+
+            VLOG(3)
+                << peer
+                << " nwrite = "
+                << nwrite
+                << " tryWrite = "
+                << tryWrite
+                << " totalWrite = "
+                << totalWrite
+                << " RETRY="
+                << BIO_should_retry     (&e->bioSSL_)
+                << " R="
+                << BIO_should_read      (&e->bioSSL_)
+                << " W="
+                << BIO_should_write     (&e->bioSSL_)
+                << " S="
+                << BIO_should_io_special(&e->bioSSL_)
+            ;
+
         }
 
         if (nwrite < tryWrite) {
@@ -259,7 +321,7 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
             peer->s_.deque_.begin() + totalWrite
     );
 
-    LOG(DEBUG)
+    VLOG(totalWrite ? 4 : 3)
         << peer
         << " Returning: "
         << (totalWrite ?: nwrite)
@@ -272,7 +334,9 @@ ssize_t Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToEncrypt(
 int Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToSend(
         CommunicationPeer const * peer) {
 
-    LOG(DEBUG) << peer;
+    VLOG(5)
+        << peer
+    ;
 
     if (peer->pendingBytes_) {
         LOG(WARNING)
@@ -293,7 +357,7 @@ int Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToSend(
             &e->bioExternal_,
             (char**)&buf.iov_base);
 
-    LOG(DEBUG)
+    VLOG(4)
         << peer
         << ": "
         << nread
@@ -301,7 +365,7 @@ int Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToSend(
     ;
 
     if (nread <= 0) {
-        LOG(DEBUG)
+        VLOG(2)
             << peer
             << " nread = "
             << nread
@@ -330,7 +394,9 @@ int Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToSend(
 template<>
 int Cb< ZeroCopyOpenSSL >::send_cb(CommunicationPeer const * peer) {
 
-    LOG(DEBUG) << peer;
+    VLOG(5)
+        << peer
+    ;
 
     assert(!peer->pendingBytes_);
 
@@ -342,7 +408,9 @@ int Cb< ZeroCopyOpenSSL >::send_cb(CommunicationPeer const * peer) {
 template<>
 void Cb< ZeroCopyOpenSSL >::on_sent(CommunicationPeer const * peer) {
 
-    LOG(DEBUG) << peer;
+    VLOG(4)
+        << peer
+    ;
 
     ZeroCopyOpenSSL * e = peer
         ->getEngine<ZeroCopyOpenSSL>();
@@ -388,7 +456,7 @@ void Cb< ZeroCopyOpenSSL >::on_sent(CommunicationPeer const * peer) {
     assert(advancement == peer->pendingBytes_);
 
     if (giveUp) {
-        const_cast<CommunicationPeer *>(peer)->disconnect();
+        const_cast<CommunicationPeer *>(peer)->onDisconnect();
         return;
     }
 
@@ -408,7 +476,9 @@ void Cb< ZeroCopyOpenSSL >::alloc_cb(
 
     CommunicationPeer * peer = comms::internal::Peer::get<CommunicationPeer>(h);
 
-    LOG(DEBUG) << peer;
+    VLOG(4)
+        << peer
+    ;
 
     ZeroCopyOpenSSL * e = peer->getEngine<ZeroCopyOpenSSL>();
 
@@ -449,11 +519,13 @@ void Cb< ZeroCopyOpenSSL >::on_read(
 
     CommunicationPeer * peer = comms::internal::Peer::get<CommunicationPeer>(h);
 
-    LOG(DEBUG) << peer;
+    VLOG(4)
+        << peer
+    ;
 
     if (nread < 0) {
 
-        LOG(DEBUG)
+        VLOG(3)
             << "nread = "
             << nread
             << " ["
@@ -468,7 +540,7 @@ void Cb< ZeroCopyOpenSSL >::on_read(
 
     if (nread > 0) {
 
-        LOG(DEBUG)
+        VLOG(5)
             << peer
             << " read "
             << nread
@@ -529,7 +601,7 @@ void Cb< ZeroCopyOpenSSL >::on_read(
             Cb< ZeroCopyOpenSSL >::StaticHelpers::tryToDecrypt(peer);
 
         if (decrypted <= 0) {
-            LOG(DEBUG)
+            VLOG(2)
                 << peer
                 << " decrypted = "
                 << decrypted
@@ -547,7 +619,7 @@ void Cb< ZeroCopyOpenSSL >::on_read(
 
                 if (peer->pendingBytes_) {
 
-                    LOG(DEBUG)
+                    VLOG(4)
                         << peer
                         << " Retried to send and emitted "
                         << peer->pendingBytes_
@@ -564,7 +636,7 @@ void Cb< ZeroCopyOpenSSL >::on_read(
                     (void) Cb< ZeroCopyOpenSSL >::StaticHelpers::
                         tryToSend(peer);
 
-                    LOG(DEBUG)
+                    VLOG(4)
                         << peer
                         << " Found no handshake data,"
                            " but found actual payload and sent "
@@ -667,6 +739,8 @@ int ZeroCopyOpenSSL::initOpenSSL(bool forMultipleThreads) {
 
 }
 
+#include <openssl/conf.h>
+#include <openssl/engine.h>
 void ZeroCopyOpenSSL::finiOpenSSL() {
 
     LOG(INFO);
@@ -683,7 +757,13 @@ void ZeroCopyOpenSSL::finiOpenSSL() {
 
     }
 
+    CONF_modules_free();
+    ERR_remove_state(0);
+    ENGINE_cleanup();
+    CONF_modules_unload(1);
     ERR_free_strings();
+    EVP_cleanup();
+    CRYPTO_cleanup_all_ex_data();
 }
 
 ZeroCopyOpenSSL::ZeroCopyOpenSSL(ZeroCopyOpenSSL::Ctx * ctx, bool passive)
@@ -752,7 +832,7 @@ ZeroCopyOpenSSL::~ZeroCopyOpenSSL() {
 
 void ZeroCopyOpenSSL::infoCallback(SSL const *, int where, int ret) {
 
-    LOG(DEBUG)
+    VLOG(3)
         << " ret = "
         << ret
         << " where = "
@@ -761,12 +841,12 @@ void ZeroCopyOpenSSL::infoCallback(SSL const *, int where, int ret) {
 
     switch (where) {
         case SSL_CB_HANDSHAKE_START:
-            LOG(DEBUG)
+            VLOG(2)
                 << " Handshake start!"
             ;
             break;
         case SSL_CB_HANDSHAKE_DONE:
-            LOG(DEBUG)
+            VLOG(2)
                 << " Handshake done!"
             ;
             break;
@@ -837,54 +917,134 @@ std::string const ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString() {
     return ret;
 }
 
-ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
-        char const * caFileOrDirectory,
-        char const * keyFilePath,
+ZeroCopyOpenSSL::Ctx::Ctx(
+        SSL_CTX * c,
         char const * passphrase
-   ) {
+    )
+        :
+            sslCtx_(c),
+            passphrase_(passphrase?:"")
+        {};
 
+ZeroCopyOpenSSL::Ctx::~Ctx(){
+
+    SSL_CTX_free(sslCtx_);
+
+}
+
+size_t ZeroCopyOpenSSL::Ctx::addCaFileOrDirectory(
+        char const * caFileOrDirectory
+    ) {
+
+    size_t failure = 0;
     bool isDir;
 
-    if (caFileOrDirectory) {
+    struct stat s;
+    if (stat(caFileOrDirectory, &s)) {
 
-        struct stat s;
-        if (stat(caFileOrDirectory, &s)) {
+        LOG(ERROR)
+            << "Error ["
+            << errno
+            << "] (\""
+            << safe_strerror(errno)
+            << "\") on path \""
+            << caFileOrDirectory
+            << "\" does not exist"
+        ;
+        return ++failure;
 
-            LOG(ERROR)
-                << "Error ["
-                << errno
-                << "] (\""
-                << safe_strerror(errno)
-                << "\") on path \""
-                << caFileOrDirectory
-                << "\" does not exist"
-            ;
-            return NULL;
+    }
 
-        }
+    if ((s.st_mode & S_IFDIR) && !(s.st_mode & S_IFREG)) {
 
-        if ((s.st_mode & S_IFDIR) && !(s.st_mode & S_IFREG)) {
+        isDir = true;
 
-            isDir = true;
+    } else {
+
+        if (!(s.st_mode & S_IFDIR) && (s.st_mode & S_IFREG)) {
+
+            isDir = false;
 
         } else {
 
-            if (!(s.st_mode & S_IFDIR) && (s.st_mode & S_IFREG)) {
+            LOG(ERROR)
+                << "Path \""
+                << caFileOrDirectory
+                << "\" must be either a regular file or a directory"
+            ;
+            return ++failure;
 
-                isDir = false;
-
-            } else {
-
-                LOG(ERROR)
-                    << "Path \""
-                    << caFileOrDirectory
-                    << "\" must be either a regular file or a directory"
-                ;
-                return NULL;
-
-            }
         }
     }
+
+    if(1 != SSL_CTX_load_verify_locations(
+                    sslCtx_,
+                    isDir ? NULL : caFileOrDirectory,
+                    isDir ? caFileOrDirectory : NULL)) {
+        ++failure;
+
+        LOG(ERROR)
+            << "SSL_CTX_load_verify_locations() failed to open CA(s) @ \""
+            << caFileOrDirectory
+            << "\": "
+            << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
+        ;
+    }
+
+    return failure;
+
+}
+
+size_t ZeroCopyOpenSSL::Ctx::addCertificateFile(
+        char const * certificateChainFile
+    ) {
+
+    size_t failure = 0;
+
+    if (1 != SSL_CTX_use_certificate_chain_file(sslCtx_, certificateChainFile)) {
+        ++failure;
+
+        LOG(ERROR)
+            << "SSL_CTX_use_certificate_chain_file() failed to open certificate @ \""
+            << certificateChainFile
+            << "\": "
+            << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
+        ;
+    }
+
+    return failure;
+
+}
+
+size_t ZeroCopyOpenSSL::Ctx::addPrivateKeyFile(
+        char const * privateKeyFilePath
+    ) {
+
+    size_t failure = 0;
+
+    if (1 != SSL_CTX_use_PrivateKey_file(sslCtx_, privateKeyFilePath, SSL_FILETYPE_PEM)) {
+
+        ++failure;
+
+        LOG(ERROR)
+            << " SSL_CTX_use_PrivateKey_file() failed to open private key @ \""
+            << privateKeyFilePath
+            << "\": "
+            << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
+        ;
+
+    }
+
+    return failure;
+
+}
+
+
+ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
+        char const * caFileOrDirectory,
+        char const * keyAndCertFilePath,
+        char const * passphrase
+   ) {
 
     SSL_CTX * sslCtx = SSL_CTX_new(SSLv23_method());
 
@@ -900,25 +1060,9 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
 
     size_t failure = 0;
 
-    if (caFileOrDirectory) {
-        if(1 != SSL_CTX_load_verify_locations(
-                        sslCtx,
-                        isDir ? NULL : caFileOrDirectory,
-                        isDir ? caFileOrDirectory : NULL)) {
-            ++failure;
-
-            LOG(ERROR)
-                << "SSL_CTX_load_verify_locations() failed to open CA(s) @ \""
-                << caFileOrDirectory
-                << "\": "
-                << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
-            ;
-        }
-    }
-
     if (!failure) {
 
-        Ctx * ctx = new (std::nothrow)Ctx(sslCtx, passphrase);
+        Ctx * ctx = new (std::nothrow) Ctx(sslCtx, passphrase);
 
         if (!ctx) {
 
@@ -929,51 +1073,33 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
 
         } else {
 
-            if (keyFilePath) {
+            /* This needs to be done before invoking SSL_CTX_use_PrivateKey_file()
+             * and irrespectively of whether a passphrase was provided or not.
+             * Otherwise if the certificate has an encrypted private key and
+             * createCtx() was invoked without a passphrase, OpenSSL would always
+             * resort to asking for the passphrase from the standand input, hence
+             * blocking forever the progress of the current thread.
+             */
 
-                /* This needs to be done before invoking SSL_CTX_use_PrivateKey_file()
-                 * and irrespectively of whether a passphrase was provided or not.
-                 * Otherwise if the certificate has an encrypted private key and
-                 * createCtx() was invoked without a passphrase, OpenSSL would always
-                 * resort to asking for the passphrase from the standand input, hence
-                 * blocking forever the progress of the current thread.
-                 */
+            SSL_CTX_set_default_passwd_cb(sslCtx, pwdCb);
+            SSL_CTX_set_default_passwd_cb_userdata(sslCtx, ctx); /* Important! */
 
-                SSL_CTX_set_default_passwd_cb(sslCtx, pwdCb);
-                SSL_CTX_set_default_passwd_cb_userdata(sslCtx, ctx); /* Important! */
+            if (caFileOrDirectory) {
+                failure += ctx->addCaFileOrDirectory(caFileOrDirectory);
+            }
 
-                if (1 != SSL_CTX_use_certificate_chain_file(sslCtx, keyFilePath)) {
-                    ++failure;
+            if (keyAndCertFilePath) {
+                failure += ctx-> addPrivateKeyFile(keyAndCertFilePath);
+                failure += ctx->addCertificateFile(keyAndCertFilePath);
+            }
 
-                    LOG(ERROR)
-                        << "SSL_CTX_use_certificate_chain_file() failed to open certificate @ \""
-                        << keyFilePath
-                        << "\": "
-                        << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
-                    ;
-                }
+            if (failure) {
 
-                if (1 != SSL_CTX_use_PrivateKey_file(sslCtx, keyFilePath, SSL_FILETYPE_PEM)) {
-
-                    ++failure;
-
-                    LOG(ERROR)
-                        << " SSL_CTX_use_PrivateKey_file() failed to open private key @ \""
-                        << keyFilePath
-                        << "\": "
-                        << ZeroCopyOpenSSL::dumpOpenSslErrorStackAsString()
-                    ;
-
-                }
-
-                if (failure) {
-
-                    delete ctx;
-                    ctx = NULL;
-
-                }
+                delete ctx;
+                ctx = NULL;
 
             }
+
 
         }
 
@@ -1037,4 +1163,6 @@ bool ZeroCopyOpenSSL::attachTransport(
     return true;
 }
 
-}}
+} /* yajr::transport namespace */
+} /* yajr namespace */
+

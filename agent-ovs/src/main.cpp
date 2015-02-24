@@ -22,6 +22,7 @@
 #include "Agent.h"
 #include "logging.h"
 #include "cmd.h"
+#include <signal.h>
 
 using std::string;
 using opflex::ofcore::OFFramework;
@@ -35,6 +36,8 @@ void sighandler(int sig) {
 #define DEFAULT_CONF SYSCONFDIR"/opflex-agent-ovs/opflex-agent-ovs.conf"
 
 int main(int argc, char** argv) {
+    signal(SIGPIPE, SIG_IGN);
+
     // Parse command line options
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -47,7 +50,7 @@ int main(int argc, char** argv) {
          "Log to the specified file (default standard out)")
 #endif
         ("level", po::value<string>()->default_value("info"),
-         "Use the specified log level (default INFO). "
+         "Use the specified log level (default info). "
          "Overridden by log level in configuration file")
         ("daemon", "Run the agent as a daemon")
         ;

@@ -6,15 +6,56 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <yajr/rpc/methods.hpp>
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
 
-namespace yajr { namespace rpc {
+
+#include <yajr/rpc/methods.hpp>
+#include <yajr/rpc/gen/echo.hpp>
+
+#include <cstring>
+
+namespace yajr {
+    namespace rpc {
 
 template<>
 void InbRes<&yajr::rpc::method::echo>::process() const {
 
-    LOG(INFO) << "Got echo reply at " << getReceived();
+    VLOG(6)
+        << "Got echo reply at "
+        << getReceived()
+    ;
+
+    rapidjson::Value const & payload = getPayload();
+
+#ifndef NDEBUG
+    for(size_t i = 1; i <= yajr::comms::internal::EchoGen::kNcanaries; ++i) {
+        VLOG(7)
+            << "About to check canary number "
+            << i
+        ;
+        if (payload[i].GetStringLength() != strlen(yajr::comms::internal::EchoGen::canary)) {
+            LOG(ERROR)
+                << "wrong lenght for canary number "
+                << i
+            ;
+            assert(0);
+        }
+        if (strncmp(payload[i].GetString(), yajr::comms::internal::EchoGen::canary,
+                1+strlen(yajr::comms::internal::EchoGen::canary))) {
+            LOG(ERROR)
+                << "wrong value for canary number "
+                << i
+            ;
+            assert(0);
+        }
+    }
+#endif
 
 }
 
-}}
+}
+}
+

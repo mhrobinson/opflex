@@ -6,12 +6,22 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/rpc/methods.hpp>
 #include <yajr/rpc/rpc.hpp>
 
 namespace yajr {
 
-namespace comms { namespace internal { class CommunicationPeer; }}
+namespace comms {
+    namespace internal {
+        class CommunicationPeer;
+    }
+}
 
 namespace rpc {
 
@@ -34,23 +44,34 @@ MessageFactory::InboundMessage(
 
     /* we don't accept any notifications */
     if (id.IsNull()) {
-        LOG(ERROR) << "Received frame with"
-                   << (doc.HasMember("id") ? " null" : "out")
-                   << " id. Dropping.";
+        LOG(ERROR)
+            << &peer
+            << " Received frame with"
+            << (doc.HasMember("id") ? " null" : "out")
+            << " id. Dropping."
+        ;
+
+        dynamic_cast< ::yajr::comms::internal::CommunicationPeer const *>(&peer)
+            ->onError(UV_EPROTO);
+
         return NULL;
     }
 
-    /* FIXME: TODO: add proper error handling to validation and
-     * make sure to signal the error to the peer whenever possible
-     */
     if (doc.HasMember("method")) {
         const rapidjson::Value& methodValue = doc["method"];
 
         if (!methodValue.IsString()) {
-            LOG(ERROR) <<
-                "Received request with non-string method. Dropping";
-            /* FIXME: TODO: send error back */
+            LOG(ERROR)
+                << &peer
+                << " Received request with non-string method. Dropping"
+            ;
+
+            dynamic_cast< ::yajr::comms::internal::CommunicationPeer const *>(&peer)
+                ->onError(UV_EPROTO);
+
             assert(methodValue.IsString());
+
+            return NULL;
         }
 
         const char * method = methodValue.GetString();
@@ -68,6 +89,10 @@ MessageFactory::InboundMessage(
     assert(id.IsArray());
     assert(id[rapidjson::SizeType(0)].IsString());
     if (!id.IsArray() || !id[rapidjson::SizeType(0)].IsString()) {
+
+        dynamic_cast< ::yajr::comms::internal::CommunicationPeer const *>(&peer)
+            ->onError(UV_EPROTO);
+
         return NULL;
     }
 
@@ -81,10 +106,19 @@ MessageFactory::InboundMessage(
         const rapidjson::Value & error = doc["error"];
         assert(error.IsObject());
 
+        if (!error.IsObject()) {
+
+            dynamic_cast< ::yajr::comms::internal::CommunicationPeer const *>(&peer)
+                ->onError(UV_EPROTO);
+
+            return NULL;
+        }
+
         return MessageFactory::InboundError(peer, error, id);
     }
 
-    /* FIXME: what should we do? */
+    dynamic_cast< ::yajr::comms::internal::CommunicationPeer const *>(&peer)
+        ->onError(UV_EPROTO);
     assert(0);
 
     return NULL;
@@ -96,7 +130,7 @@ MessageFactory::getInboundMessage(
         rapidjson::Document const & doc
         ) {
 
-    LOG(DEBUG);
+    VLOG(5);
 
     yajr::rpc::InboundMessage * msg =
         MessageFactory::InboundMessage(peer, doc);
@@ -105,4 +139,6 @@ MessageFactory::getInboundMessage(
 
 }
 
-}}
+}
+}
+

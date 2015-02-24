@@ -6,13 +6,20 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/rpc/internal/meta.hpp>
 #include <yajr/rpc/methods.hpp>
 #include <yajr/rpc/rpc.hpp>
 
 namespace meta = yajr::rpc::internal::meta;
 
-namespace yajr { namespace rpc {
+namespace yajr {
+    namespace rpc {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmultichar"
@@ -25,9 +32,11 @@ MessageFactory::InboundResult(
 
     char const * method = id[rapidjson::SizeType(0)].GetString();
 
-    LOG(DEBUG)
-        << " peer=" << &peer
-        << " method=" <<  method
+    VLOG(5)
+        << " peer="
+        <<  &peer
+        << " method="
+        <<   method
     ;
 
 #undef  PERFECT_RET_VAL
@@ -39,4 +48,6 @@ MessageFactory::InboundResult(
 
 #pragma GCC diagnostic pop
 
-}}
+} /* yajr::rpc namespace */
+} /* yajr namespace */
+

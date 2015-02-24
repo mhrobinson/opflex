@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include "opflex/modb/internal/Region.h"
 #include "opflex/modb/internal/ObjectStore.h"
 #include "LockGuard.h"
@@ -122,7 +128,7 @@ void Region::getChildren(class_id_t parent_class,
     ci.getChildren(parent_uri, parent_prop, output);
 }
 
-const std::pair<URI, prop_id_t>& Region::getParent(class_id_t child_class,
+std::pair<URI, prop_id_t> Region::getParent(class_id_t child_class,
                                                    const URI& child) {
     LockGuard guard(&region_mutex);
     ClassIndex& ci = class_map.at(child_class);

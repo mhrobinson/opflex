@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include "opflex/modb/ObjectListener.h"
 #include "opflex/c/ofobjectlistener_c.h"
 
@@ -23,8 +29,8 @@ public:
 
     virtual ~CObjectListener() {}
 
-    virtual void objectUpdated(class_id_t class_id, const URI& uri) {
-        callback(user_data, (ofclass_id_t)class_id, (ofuri_p*)&uri);
+    virtual void objectUpdated(opflex::modb::class_id_t class_id, const URI& uri) {
+        callback(user_data, class_id, (ofuri_p*)&uri);
     }
 
     void* user_data;

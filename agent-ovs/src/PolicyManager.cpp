@@ -29,6 +29,7 @@ using boost::unique_lock;
 using boost::lock_guard;
 using boost::mutex;
 using boost::shared_ptr;
+using boost::make_shared;
 using boost::optional;
 using boost::unordered_set;
 
@@ -54,8 +55,11 @@ void PolicyManager::start() {
 
     BridgeDomain::registerListener(framework, &domainListener);
     FloodDomain::registerListener(framework, &domainListener);
+    FloodContext::registerListener(framework, &domainListener);
     RoutingDomain::registerListener(framework, &domainListener);
     Subnets::registerListener(framework, &domainListener);
+    Subnet::registerListener(framework, &domainListener);
+    InstContext::registerListener(framework, &domainListener);
     EpGroup::registerListener(framework, &domainListener);
 
     EpGroup::registerListener(framework, &contractListener);
@@ -82,8 +86,11 @@ void PolicyManager::stop() {
     using namespace modelgbp::gbpe;
     BridgeDomain::unregisterListener(framework, &domainListener);
     FloodDomain::unregisterListener(framework, &domainListener);
+    FloodContext::unregisterListener(framework, &domainListener);
     RoutingDomain::unregisterListener(framework, &domainListener);
     Subnets::unregisterListener(framework, &domainListener);
+    Subnet::unregisterListener(framework, &domainListener);
+    InstContext::unregisterListener(framework, &domainListener);
     EpGroup::unregisterListener(framework, &domainListener);
 
     EpGroup::unregisterListener(framework, &contractListener);
@@ -112,6 +119,13 @@ void PolicyManager::notifyEPGDomain(const URI& egURI) {
     lock_guard<mutex> guard(listener_mutex);
     BOOST_FOREACH(PolicyListener* listener, policyListeners) {
         listener->egDomainUpdated(egURI);
+    }
+}
+
+void PolicyManager::notifyDomain(class_id_t cid, const URI& domURI) {
+    lock_guard<mutex> guard(listener_mutex);
+    BOOST_FOREACH(PolicyListener* listener, policyListeners) {
+        listener->domainUpdated(cid, domURI);
     }
 }
 
@@ -146,6 +160,14 @@ PolicyManager::getFDForGroup(const opflex::modb::URI& eg) {
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return boost::none;
     return it->second.floodDomain;
+}
+
+optional<shared_ptr<modelgbp::gbpe::FloodContext> >
+PolicyManager::getFloodContextForGroup(const opflex::modb::URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
+    group_map_t::iterator it = group_map.find(eg);
+    if (it == group_map.end()) return boost::none;
+    return it->second.floodContext;
 }
 
 void PolicyManager::getSubnetsForGroup(const opflex::modb::URI& eg,
@@ -198,7 +220,6 @@ void PolicyManager::updateSubnetIndex(const opflex::modb::URI& subnetsUri) {
     BOOST_FOREACH(const shared_ptr<Subnet>& subnet, subnet_list) {
         subnet_ref_map[uri.get()].insert(subnet->getURI());
     }
-
 }
 
 bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
@@ -216,19 +237,20 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
     }
     toRemove = false;
 
-    optional<shared_ptr<InstContext> > groupInstCtx;
-    groupInstCtx = epg.get()->resolveGbpeInstContext();
-    if (gs.vnid)
-        vnid_map.erase(gs.vnid.get());
-    if (groupInstCtx) {
-        gs.vnid = groupInstCtx.get()->getEncapId();
-        if (gs.vnid)
-            vnid_map.insert(std::make_pair(gs.vnid.get(), egURI));
+    optional<shared_ptr<InstContext> > newInstCtx =
+        epg.get()->resolveGbpeInstContext();
+    if (gs.instContext && gs.instContext.get()->getEncapId()) {
+        vnid_map.erase(gs.instContext.get()->getEncapId().get());
+    }
+    if (newInstCtx && newInstCtx.get()->getEncapId()) {
+        vnid_map.insert(
+            std::make_pair(newInstCtx.get()->getEncapId().get(), egURI));
     }
 
     optional<shared_ptr<RoutingDomain> > newrd;
     optional<shared_ptr<BridgeDomain> > newbd;
     optional<shared_ptr<FloodDomain> > newfd;
+    optional<shared_ptr<FloodContext> > newfdctx;
     GroupState::subnet_map_t newsmap;
 
     optional<class_id_t> domainClass;
@@ -290,6 +312,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
                         ndomainClass = dref.get()->getTargetClass();
                         ndomainURI = dref.get()->getTargetURI();
                     }
+                    newfdctx = newfd.get()->resolveGbpeFloodContext();
                 }
             }
             break;
@@ -314,13 +337,17 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
     }
 
     bool updated = false;
-    if (newfd != gs.floodDomain ||
+    if (newInstCtx != gs.instContext ||
+        newfd != gs.floodDomain ||
+        newfdctx != gs.floodContext ||
         newbd != gs.bridgeDomain ||
         newrd != gs.routingDomain ||
         newsmap != gs.subnet_map)
         updated = true;
     
+    gs.instContext = newInstCtx;
     gs.floodDomain = newfd;
+    gs.floodContext = newfdctx;
     gs.bridgeDomain = newbd;
     gs.routingDomain = newrd;
     gs.subnet_map = newsmap;
@@ -332,7 +359,10 @@ boost::optional<uint32_t>
 PolicyManager::getVnidForGroup(const opflex::modb::URI& eg) {
     lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
-    return it != group_map.end() ? it->second.vnid : boost::none;
+    return it != group_map.end() && it->second.instContext &&
+           it->second.instContext.get()->getEncapId()
+           ? it->second.instContext.get()->getEncapId().get()
+           : optional<uint32_t>();
 }
 
 boost::optional<opflex::modb::URI>
@@ -340,6 +370,15 @@ PolicyManager::getGroupForVnid(uint32_t vnid) {
     lock_guard<mutex> guard(state_mutex);
     vnid_map_t::iterator it = vnid_map.find(vnid);
     return it != vnid_map.end() ? optional<URI>(it->second) : boost::none;
+}
+
+optional<string> PolicyManager::getMulticastIPForGroup(const URI& eg) {
+    lock_guard<mutex> guard(state_mutex);
+    group_map_t::iterator it = group_map.find(eg);
+    return it != group_map.end() && it->second.instContext &&
+           it->second.instContext.get()->getMulticastGroupIP()
+           ? it->second.instContext.get()->getMulticastGroupIP().get()
+           : optional<string>();
 }
 
 bool PolicyManager::groupExists(const opflex::modb::URI& eg) {
@@ -446,18 +485,26 @@ void PolicyManager::updateEPGContracts(const URI& egURI,
  * Check equality of L24Classifier objects.
  */
 static bool
-classifierEq(const shared_ptr<modelgbp::gbpe::L24Classifier>& lhs,
-             const shared_ptr<modelgbp::gbpe::L24Classifier>& rhs) {
-    if (lhs == rhs) {
+ruleEq(const shared_ptr<PolicyRule>& lhsObj,
+       const shared_ptr<PolicyRule>& rhsObj) {
+    using namespace modelgbp::gbpe;
+    if (lhsObj == rhsObj) {
         return true;
     }
-    return lhs.get() && rhs.get() &&
+    if (lhsObj.get() == NULL || rhsObj.get() == NULL) {
+        return false;
+    }
+    const shared_ptr<L24Classifier>& lhs = lhsObj->getL24Classifier();
+    const shared_ptr<L24Classifier>& rhs = rhsObj->getL24Classifier();
+
+    return lhsObj->getDirection() == rhsObj->getDirection() &&
+        lhsObj->getAllow() == rhsObj->getAllow() &&
+        lhs.get() && rhs.get() &&
         lhs->getURI() == rhs->getURI() &&
         lhs->getArpOpc() == rhs->getArpOpc() &&
         lhs->getConnectionTracking() == rhs->getConnectionTracking() &&
         lhs->getDFromPort() == rhs->getDFromPort() &&
         lhs->getDToPort() == rhs->getDToPort() &&
-        lhs->getDirection() == rhs->getDirection() &&
         lhs->getEtherT() == rhs->getEtherT() &&
         lhs->getProt() == rhs->getProt() &&
         lhs->getSFromPort() == rhs->getSFromPort() &&
@@ -489,12 +536,17 @@ bool PolicyManager::updateContractRules(const URI& contractURI,
         stable_sort(rules.begin(), rules.end(), ruleComp);
 
         BOOST_FOREACH(shared_ptr<Rule>& rule, rules) {
+            if (!rule->isDirectionSet()) {
+                continue;       // ignore rules with no direction
+            }
+            uint8_t dir = rule->getDirection().get();
             vector<shared_ptr<L24Classifier> > classifiers;
             vector<shared_ptr<RuleToClassifierRSrc> > clsRel;
             rule->resolveGbpRuleToClassifierRSrc(clsRel);
 
             BOOST_FOREACH(shared_ptr<RuleToClassifierRSrc>& r, clsRel) {
-                if (!r->isTargetSet()) {
+                if (!r->isTargetSet() ||
+                    r->getTargetClass().get() != L24Classifier::CLASS_ID) {
                     continue;
                 }
                 optional<shared_ptr<L24Classifier> > cls =
@@ -504,8 +556,29 @@ bool PolicyManager::updateContractRules(const URI& contractURI,
                 }
             }
             stable_sort(classifiers.begin(), classifiers.end(), classifierComp);
-            newRules.insert(newRules.end(), classifiers.begin(),
-                    classifiers.end());
+
+            vector<shared_ptr<RuleToActionRSrc> > actRel;
+            rule->resolveGbpRuleToActionRSrc(actRel);
+            bool ruleAllow = true;
+            uint32_t minOrder = UINT32_MAX;
+            BOOST_FOREACH(shared_ptr<RuleToActionRSrc>& r, actRel) {
+                if (!r->isTargetSet() ||
+                    r->getTargetClass().get() != AllowDenyAction::CLASS_ID) {
+                    continue;
+                }
+                optional<shared_ptr<AllowDenyAction> > act =
+                    AllowDenyAction::resolve(framework, r->getTargetURI().get());
+                if (act) {
+                    if (act.get()->getOrder(UINT32_MAX-1) < minOrder) {
+                        minOrder = act.get()->getOrder(UINT32_MAX-1);
+                        ruleAllow = act.get()->getAllow(0) != 0;
+                    }
+                }
+            }
+
+            BOOST_FOREACH (const shared_ptr<L24Classifier>& c, classifiers) {
+                newRules.push_back(make_shared<PolicyRule>(dir, c, ruleAllow));
+            }
         }
     }
     ContractState& cs = contractMap[contractURI];
@@ -513,15 +586,16 @@ bool PolicyManager::updateContractRules(const URI& contractURI,
     rule_list_t::const_iterator li = cs.rules.begin();
     rule_list_t::const_iterator ri = newRules.begin();
     while (li != cs.rules.end() && ri != newRules.end() &&
-           classifierEq(*li, *ri)) {
+           ruleEq(*li, *ri)) {
         ++li;
         ++ri;
     }
     bool updated = (li != cs.rules.end() || ri != newRules.end());
     if (updated) {
         cs.rules.swap(newRules);
-        BOOST_FOREACH(shared_ptr<L24Classifier>& c, cs.rules) {
-            LOG(DEBUG) << contractURI << " rule: " << c->getURI();
+        BOOST_FOREACH(shared_ptr<PolicyRule>& c, cs.rules) {
+            LOG(DEBUG) << contractURI << " rule: "
+                << c->getL24Classifier()->getURI();
         }
     }
     return updated;
@@ -588,6 +662,9 @@ void PolicyManager::DomainListener::objectUpdated(class_id_t class_id,
     guard.unlock();
     BOOST_FOREACH(const URI& u, notify) {
         pmanager.notifyEPGDomain(u);
+    }
+    if (class_id != modelgbp::gbp::EpGroup::CLASS_ID) {
+        pmanager.notifyDomain(class_id, uri);
     }
 }
 

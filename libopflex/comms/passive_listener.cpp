@@ -6,6 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/internal/comms.hpp>
 
 #include <opflex/logging/internal/logging.hpp>
@@ -48,7 +54,11 @@
         ::yajr::Peer::UvLoopSelector uvLoopSelector
     ) {
 
-    LOG(INFO) << ip_address << ":" << port;
+    LOG(INFO)
+        << ip_address
+        << ":"
+        << port
+    ;
 
     ::yajr::comms::internal::ListeningPeer * peer;
     if (!(peer = new (std::nothrow) ::yajr::comms::internal::ListeningPeer(
@@ -57,27 +67,37 @@
             data,
             listenerUvLoop,
             uvLoopSelector))) {
-        LOG(WARNING) <<  "out of memory, unable to create listener";
+        LOG(WARNING)
+            << "out of memory, unable to create listener"
+        ;
         return NULL;
     }
 
     int rc;
 
     if ((rc = peer->setAddrFromIpAndPort(ip_address, port))) {
-        LOG(WARNING) << "addr_from_ip_and_port: [" << uv_err_name(rc) <<
-            "] " << uv_strerror(rc);
+        LOG(WARNING)
+            << "addr_from_ip_and_port: ["
+            << uv_err_name(rc)
+            << "] "
+            << uv_strerror(rc)
+        ;
         assert(0);
         peer->destroy();
         return NULL;
     }
 
-    LOG(DEBUG) << peer << " queued up for listening";
+    VLOG(1)
+        << peer
+        << " queued up for listening"
+    ;
     peer->insert(::yajr::comms::internal::Peer::LoopData::TO_LISTEN);
 
     return peer;
 }
 
-namespace yajr { namespace comms {
+namespace yajr {
+    namespace comms {
 
 using namespace yajr::comms::internal;
 
@@ -85,7 +105,10 @@ void ::yajr::comms::internal::ListeningPeer::retry() {
 
     if (destroying_) {
 
-        LOG(INFO) << this << "Not retrying because of pending destroy";
+        LOG(INFO)
+            << this
+            << "Not retrying because of pending destroy"
+        ;
 
         return;
 
@@ -94,27 +117,42 @@ void ::yajr::comms::internal::ListeningPeer::retry() {
     int rc;
 
     if ((rc = uv_tcp_init(_.listener_.uvLoop_, &handle_))) {
-        LOG(WARNING) << "uv_tcp_init: [" << uv_err_name(rc) << "]" <<
-            uv_strerror(rc);
+        LOG(WARNING)
+            << "uv_tcp_init: ["
+            << uv_err_name(rc)
+            << "]"
+            << uv_strerror(rc)
+        ;
         goto failed_tcp_init;
     }
 
-    LOG(DEBUG) << this << " up() for listening tcp init";
+    VLOG(1)
+        << this
+        << " up() for listening tcp init"
+    ;
     up();
 
     if ((rc = uv_tcp_bind(&handle_,
                 (struct sockaddr *) &listen_on_,
                 0))) {
-        LOG(WARNING) << "uv_tcp_bind: [" << uv_err_name(rc) << "] " <<
-            uv_strerror(rc);
+        LOG(WARNING)
+            << "uv_tcp_bind: ["
+            << uv_err_name(rc)
+            << "] "
+            << uv_strerror(rc)
+        ;
         status_ = Peer::kPS_FAILED_BINDING;
         goto failed_after_init;
     }
 
     if ((rc = uv_listen((uv_stream_t*) &handle_, 1024,
                 on_passive_connection))) {
-        LOG(WARNING) << "uv_tcp_listen: [" << uv_err_name(rc) << "] " <<
-            uv_strerror(rc);
+        LOG(WARNING)
+            << "uv_tcp_listen: ["
+            << uv_err_name(rc)
+            << "] "
+            << uv_strerror(rc)
+        ;
         status_ = Peer::kPS_FAILED_LISTENING;
         goto failed_after_init;
     }
@@ -123,14 +161,18 @@ void ::yajr::comms::internal::ListeningPeer::retry() {
 
     insert(internal::Peer::LoopData::LISTENING);
 
-    LOG(DEBUG) << "listening!";
+    VLOG(1)
+        << "listening!"
+    ;
 
     connected_ = 1;
 
     return;
 
 failed_after_init:
-    LOG(DEBUG) << "closing tcp handle because of immediate failure after init";
+    VLOG(1)
+        << "closing tcp handle because of immediate failure after init"
+    ;
     uv_close((uv_handle_t*) &handle_, on_close);
 
 failed_tcp_init:
@@ -155,7 +197,7 @@ namespace internal {
 void on_passive_connection(uv_stream_t * server_handle, int status)
 {
 
-    LOG(DEBUG);
+    VLOG(3);
 
     assert(status == 0);
     ListeningPeer * listener = Peer::get<ListeningPeer>(server_handle);
@@ -166,7 +208,9 @@ void on_passive_connection(uv_stream_t * server_handle, int status)
                     listener->getConnectionHandlerData(),
                     listener->getUvLoopSelector()
                     ))) {
-        LOG(WARNING) << "out of memory, dropping new peer on the floor";
+        LOG(WARNING)
+            << "out of memory, dropping new peer on the floor"
+        ;
         return;
     }
 
@@ -178,8 +222,12 @@ void on_passive_connection(uv_stream_t * server_handle, int status)
     }
 
     if ((rc = uv_accept(server_handle, (uv_stream_t*) &peer->handle_))) {
-        LOG(DEBUG) << "uv_accept: [" << uv_err_name(rc) << "] " <<
-            uv_strerror(rc);
+        VLOG(1)
+            << "uv_accept: ["
+            << uv_err_name(rc)
+            << "] "
+            << uv_strerror(rc)
+        ;
         peer->onError(rc);
         uv_close((uv_handle_t*)&peer->handle_, on_close);
         return;
@@ -211,10 +259,10 @@ int ::yajr::comms::internal::ListeningPeer::setAddrFromIpAndPort(
         const std::string& ip_address,
         uint16_t port) {
 
-    LOG(DEBUG);
+    VLOG(4);
 
 #ifndef NDEBUG
-    /* make Valgrind happy */
+    /* make valgrind happy */
     listen_on_ = sockaddr_storage();
 #endif
 
@@ -240,4 +288,6 @@ int ::yajr::comms::internal::ListeningPeer::setAddrFromIpAndPort(
 
 } /* yajr::comms::internal namespace */
 
-}} /* yajr::comms and yajr naMespaces */
+} /* yajr::comms namespace */
+} /* yajr namespace */
+

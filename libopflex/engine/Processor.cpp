@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <time.h>
 #include <uv.h>
 #include <limits>
@@ -49,9 +55,8 @@ size_t hash_value(pair<class_id_t, URI> const& p);
 Processor::Processor(ObjectStore* store_)
     : AbstractObjectListener(store_),
       serializer(store_, this),
-      pool(*this),
-      proc_active(false),
-      processingDelay(DEFAULT_DELAY) {
+      pool(*this), processingDelay(DEFAULT_DELAY),
+      proc_active(false) {
     uv_mutex_init(&item_mutex);
 }
 
@@ -106,7 +111,8 @@ void Processor::addRef(obj_state_by_exp::iterator& it,
             uit = uri_index.find(up.second);
         } 
         uit->details->refcount += 1;
-        LOG(DEBUG) << "Addref " << uit->uri.toString()
+        LOG(DEBUG2) << "Addref " << uit->uri.toString()
+                   << " (from " << it->uri.toString() << ")"
                    << " " << uit->details->refcount
                    << " state " << uit->details->state;
         
@@ -124,7 +130,7 @@ void Processor::removeRef(obj_state_by_exp::iterator& it,
         if (uit != uri_index.end()) {
             uit->details->refcount -= 1;
             if (uit->details->refcount <= 0) {
-                LOG(DEBUG) << "Refcount zero " << uit->uri.toString();
+                LOG(DEBUG2) << "Refcount zero " << uit->uri.toString();
                 uint64_t nexp = now(&proc_loop)+processingDelay;
                 uri_index.modify(uit, Processor::change_expiration(nexp));
             }
@@ -161,17 +167,19 @@ bool Processor::isOrphan(const item& item) {
         return false;
 
     try {
-        const std::pair<URI, prop_id_t>& parent =
+        std::pair<URI, prop_id_t> parent =
             client->getParent(item.details->class_id, item.uri);
 
         obj_state_by_uri& uri_index = obj_state.get<uri_tag>();
         obj_state_by_uri::iterator uit = uri_index.find(parent.first);
         // parent missing
-        if (uit == uri_index.end()) return true;
+        if (uit == uri_index.end())
+            return true;
 
         // the parent is local, so there can be no remote parent with
         // a nonzero refcount
-        if (uit->details->local) return true;
+        if (uit->details->local)
+            return true;
 
         return isOrphan(*uit);
     } catch (std::out_of_range e) {
@@ -185,7 +193,7 @@ bool Processor::isOrphan(const item& item) {
 bool Processor::isParentSyncObject(const item& item) {
     try {
         const ClassInfo& ci = store->getPropClassInfo(item.details->class_id);
-        const std::pair<URI, prop_id_t>& parent =
+        std::pair<URI, prop_id_t> parent =
             client->getParent(item.details->class_id, item.uri);
         const ClassInfo& parent_ci = store->getPropClassInfo(parent.second);
         
@@ -204,12 +212,14 @@ bool Processor::resolveObj(ClassInfo::class_type_t type, const item& i,
                            bool checkTime) {
     uint64_t curTime = now(&proc_loop);
     if (checkTime && 
+        (i.details->resolve_time != 0) &&
         (curTime < (i.details->resolve_time + LOCAL_REFRESH_RATE/2)))
         return false;
     i.details->resolve_time = curTime;
     switch (type) {
     case ClassInfo::POLICY:
         {
+            LOG(DEBUG) << "Resolving policy " << i.uri;
             vector<reference_t> refs;
             refs.push_back(make_pair(i.details->class_id, i.uri));
             PolicyResolveReq* req = new PolicyResolveReq(this, refs);
@@ -219,6 +229,7 @@ bool Processor::resolveObj(ClassInfo::class_type_t type, const item& i,
         break;
     case ClassInfo::REMOTE_ENDPOINT:
         {
+            LOG(DEBUG) << "Resolving remote endpoint " << i.uri;
             vector<reference_t> refs;
             refs.push_back(make_pair(i.details->class_id, i.uri));
             EndpointResolveReq* req = new EndpointResolveReq(this, refs);
@@ -238,6 +249,7 @@ bool Processor::declareObj(ClassInfo::class_type_t type, const item& i) {
     switch (type) {
     case ClassInfo::LOCAL_ENDPOINT:
         if (isParentSyncObject(i)) {
+            LOG(DEBUG) << "Declaring local endpoint " << i.uri;
             vector<reference_t> refs;
             refs.push_back(make_pair(i.details->class_id, i.uri));
             EndpointDeclareReq* req = new EndpointDeclareReq(this, refs);
@@ -247,6 +259,7 @@ bool Processor::declareObj(ClassInfo::class_type_t type, const item& i) {
         break;
     case ClassInfo::OBSERVABLE:
         if (isParentSyncObject(i)) {
+            LOG(DEBUG3) << "Declaring local observable " << i.uri;
             vector<reference_t> refs;
             refs.push_back(make_pair(i.details->class_id, i.uri));
             StateReportReq* req = new StateReportReq(this, refs);
@@ -264,13 +277,29 @@ bool Processor::declareObj(ClassInfo::class_type_t type, const item& i) {
 // Process the item.  This is where we do most of the actual work of
 // syncing the managed object over opflex
 void Processor::processItem(obj_state_by_exp::iterator& it) {
-    ItemState newState = IN_SYNC;
     StoreClient::notif_t notifs;
 
     util::LockGuard guard(&item_mutex);
     ItemState curState = it->details->state;
     size_t curRefCount = it->details->refcount;
     bool local = it->details->local;
+
+    ItemState newState;
+
+    switch (curState) {
+    case NEW:
+    case UPDATED:
+        newState = IN_SYNC;
+        break;
+    case PENDING_DELETE:
+        if (local)
+            newState = IN_SYNC;
+        else
+            newState = REMOTE;
+    default:
+        newState = curState;
+        break;
+    }
 
     const ClassInfo& ci = store->getClassInfo(it->details->class_id);
     shared_ptr<const ObjectInstance> oi;
@@ -287,7 +316,7 @@ void Processor::processItem(obj_state_by_exp::iterator& it) {
         }
     }
 
-    LOG(DEBUG) << "Processing " << (local ? "local" : "nonlocal")
+    LOG(DEBUG2) << "Processing " << (local ? "local" : "nonlocal")
                << " item " << it->uri.toString() 
                << " of class " << ci.getName()
                << " and type " << ci.getType()
@@ -297,9 +326,11 @@ void Processor::processItem(obj_state_by_exp::iterator& it) {
     if (oi && isOrphan(*it)) {
         switch (curState) {
         case NEW:
+        case REMOTE:
             {
                 // requeue new items so if there are any pending references
                 // we won't remove them right away
+                LOG(DEBUG2) << "Queuing delete for orphan " << it->uri.toString();
                 newState = PENDING_DELETE;
                 obj_state_by_exp& exp_index = obj_state.get<expiration_tag>();
                 exp_index.modify(it,
@@ -358,13 +389,11 @@ void Processor::processItem(obj_state_by_exp::iterator& it) {
     } 
 
     if (curRefCount > 0) {
-        if (resolveObj(ci.getType(), *it))
-            newState = RESOLVED;
+        resolveObj(ci.getType(), *it);
+        newState = RESOLVED;
 
         it->details->state = newState;
-    }
-
-    if (oi) {
+    } else if (oi) {
         if (declareObj(ci.getType(), *it))
             newState = IN_SYNC;
 
@@ -440,6 +469,11 @@ void Processor::proc_async_cb(uv_async_t* handle) {
     processor->doProcess();
 }
 
+void Processor::connect_async_cb(uv_async_t* handle) {
+    Processor* processor = (Processor*)handle->data;
+    processor->handleNewConnections();
+}
+
 static void register_listeners(void* processor, const modb::ClassInfo& ci) {
     Processor* p = (Processor*)processor;
     p->listen(ci.getId());
@@ -460,6 +494,7 @@ void Processor::cleanup_async_cb(uv_async_t* handle) {
     uv_timer_stop(&processor->proc_timer);
     uv_close((uv_handle_t*)&processor->proc_timer, NULL);
     uv_close((uv_handle_t*)&processor->proc_async, NULL);
+    uv_close((uv_handle_t*)&processor->connect_async, NULL);
     uv_close((uv_handle_t*)handle, NULL);
 }
 
@@ -478,6 +513,8 @@ void Processor::start() {
     uv_async_init(&proc_loop, &cleanup_async, cleanup_async_cb);
     proc_async.data = this;
     uv_async_init(&proc_loop, &proc_async, proc_async_cb);
+    connect_async.data = this;
+    uv_async_init(&proc_loop, &connect_async, connect_async_cb);
     proc_timer.data = this;
     uv_timer_start(&proc_timer, &timer_callback, 
                    processingDelay, processingDelay);
@@ -527,7 +564,7 @@ void Processor::doObjectUpdated(modb::class_id_t class_id,
     if (uit == uri_index.end()) {
         obj_state.insert(item(uri, class_id, 
                               nexp, LOCAL_REFRESH_RATE,
-                              NEW, remote == false));
+                              remote ? REMOTE : NEW, remote == false));
     } else if (uit->details->local) {
         uit->details->state = UPDATED;
         uri_index.modify(uit, change_expiration(nexp));
@@ -561,17 +598,21 @@ OpflexHandler* Processor::newHandler(OpflexConnection* conn) {
     return new OpflexPEHandler(conn, this);
 }
 
-void Processor::connectionReady(OpflexConnection* conn) {
+void Processor::handleNewConnections() {
     util::LockGuard guard(&item_mutex);
     BOOST_FOREACH(const item& i, obj_state) {
         const ClassInfo& ci = store->getClassInfo(i.details->class_id);
-        if (i.details->state == RESOLVED) {
-            resolveObj(ci.getType(), i, false);
-        }
         if (i.details->state == IN_SYNC) {
             declareObj(ci.getType(), i);
         }
+        if (i.details->state == RESOLVED) {
+            resolveObj(ci.getType(), i, false);
+        }
     }
+}
+
+void Processor::connectionReady(OpflexConnection* conn) {
+    uv_async_send(&connect_async);
 }
 
 } /* namespace engine */

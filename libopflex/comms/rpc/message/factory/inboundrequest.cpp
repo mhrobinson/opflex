@@ -6,13 +6,20 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/rpc/internal/meta.hpp>
 #include <yajr/rpc/methods.hpp>
 #include <yajr/rpc/rpc.hpp>
 
 namespace meta = yajr::rpc::internal::meta;
 
-namespace yajr { namespace rpc {
+namespace yajr {
+    namespace rpc {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmultichar"
@@ -23,7 +30,7 @@ MessageFactory::InboundRequest(
         rapidjson::Value const & params,
         char const * method,
         rapidjson::Value const & id) {
-    LOG(DEBUG);
+    VLOG(5);
 #undef  PERFECT_RET_VAL
 #define PERFECT_RET_VAL(method) \
     new (std::nothrow) InbReq<&method>(peer, params, id)
@@ -32,4 +39,6 @@ MessageFactory::InboundRequest(
 
 #pragma GCC diagnostic pop
 
-}}
+}
+}
+

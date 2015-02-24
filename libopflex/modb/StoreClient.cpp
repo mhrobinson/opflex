@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include "opflex/modb/internal/ObjectStore.h"
 
 namespace opflex {
@@ -43,7 +49,7 @@ void StoreClient::queueNotification(class_id_t class_id, const URI& uri,
     // path.
     try {
         Region* r = store->getRegion(class_id);
-        const std::pair<URI, prop_id_t>& parent = r->getParent(class_id, uri);
+        std::pair<URI, prop_id_t> parent = r->getParent(class_id, uri);
         queueNotification(store->prop_map.at(parent.second)->getId(), 
                           parent.first, notifs);
     } catch (std::out_of_range e) {
@@ -113,7 +119,7 @@ bool StoreClient::remove(class_id_t class_id, const URI& uri,
 
     // remove the parent link
     try {
-        const std::pair<URI, prop_id_t>& parent = r->getParent(class_id, uri);
+        std::pair<URI, prop_id_t> parent = r->getParent(class_id, uri);
         std::vector<std::pair<URI, prop_id_t> > parents;
         std::vector<std::pair<URI, prop_id_t> >::iterator pit;
         class_id_t parent_class = store->prop_map.at(parent.second)->getId();
@@ -177,7 +183,7 @@ void StoreClient::getChildren(class_id_t parent_class,
                    child_class, output);
 }
 
-const std::pair<URI, prop_id_t>& 
+std::pair<URI, prop_id_t>
 StoreClient::getParent(class_id_t child_class,
                        const URI& child) {
     Region* r = store->getRegion(child_class);

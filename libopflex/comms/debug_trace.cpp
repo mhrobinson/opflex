@@ -6,6 +6,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <stdlib.h>
 
 #include <opflex/logging/internal/logging.hpp>
@@ -18,13 +24,15 @@ extern "C" void __cyg_profile_func_enter(void *this_fn, void *call_site)
 extern "C" void __cyg_profile_func_exit(void *this_fn, void *call_site)
                                         __attribute__((no_instrument_function));
 
-namespace opflex { namespace logging {
+namespace opflex {
+    namespace logging {
+
     class Instruction;
 
-std::ostream& operator<< (std::ostream& os, Instruction * const func)
+std::ostream& operator << (std::ostream& os, Instruction * const func)
                                         __attribute__((no_instrument_function));
 
-std::ostream& operator<< (std::ostream& os, Instruction * const func) {
+std::ostream& operator << (std::ostream& os, Instruction * const func) {
 
     /* not thread-safe, but for now we don't care */
     static size_t funcnamesize = 256;
@@ -63,17 +71,31 @@ std::ostream& operator<< (std::ostream& os, Instruction * const func) {
 					    funcname, &funcnamesize, &status);
 	    if (status == 0) {
             funcname = ret; // use possibly realloc()-ed string
-            os << *symbollist << ": " << funcname << "+" << begin_offset;
+            os
+                << *symbollist
+                << ": "
+                << funcname
+                << "+"
+                << begin_offset
+            ;
 	    } else {
             // demangling failed. Output function name as a C function with
             // no arguments.
-            os << *symbollist << ": " << begin_name << "+" << begin_offset;
+            os
+                << *symbollist
+                << ": "
+                << begin_name
+                << "+"
+                << begin_offset
+            ;
         }
 	}
 	else
 	{
 	    // couldn't parse the line? print the whole line.
-        os << *symbollist;
+        os
+            << *symbollist
+        ;
 	}
 
     free(symbollist);
@@ -81,7 +103,8 @@ std::ostream& operator<< (std::ostream& os, Instruction * const func) {
     return os;
 }
 
-}}
+} /* opflex::logging namespace */
+} /* opflex namespace */
 
 extern "C" void __cyg_profile_func_enter(void *func, void *caller) {
     LOG(TRACE)
@@ -100,3 +123,4 @@ extern "C" void __cyg_profile_func_exit(void *func, void *caller) {
         << static_cast< opflex::logging::Instruction * >(caller)
     ;
 }
+

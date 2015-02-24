@@ -6,12 +6,19 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <yajr/rpc/internal/meta.hpp>
 #include <yajr/rpc/methods.hpp>
 
 namespace meta = yajr::rpc::internal::meta;
 
-namespace yajr { namespace rpc {
+namespace yajr {
+    namespace rpc {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmultichar"
@@ -19,7 +26,9 @@ namespace yajr { namespace rpc {
 
 MethodName const *
 MessageFactory::lookupMethod(char const * method) {
-    LOG(DEBUG) << method;
+    VLOG(6)
+        << method
+    ;
 #undef  PERFECT_RET_VAL
 #define PERFECT_RET_VAL(method) \
     &method
@@ -28,5 +37,6 @@ MessageFactory::lookupMethod(char const * method) {
 
 #pragma GCC diagnostic pop
 
-}}
+} /* yajr::rpc namespace */
+} /* yajr namespace */
 

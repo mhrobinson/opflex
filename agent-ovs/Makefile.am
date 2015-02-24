@@ -38,10 +38,11 @@ libagent_ovs_la_LIBADD = \
 	$(BOOST_FILESYSTEM_LIB) \
 	$(BOOST_THREAD_LIB) \
 	$(BOOST_ASIO_LIB) \
+	$(BOOST_RANDOM_LIB) \
 	$(libopenvswitch_LIBS) \
 	$(libofproto_LIBS)
 
-libagent_ovs_la_SOURCES = \
+noinst_HEADERS = \
 	src/include/AgentLogHandler.h \
 	src/include/PolicyListener.h \
 	src/include/PolicyManager.h \
@@ -67,8 +68,16 @@ libagent_ovs_la_SOURCES = \
 	src/include/IdGenerator.h \
 	src/include/RangeMask.h \
 	src/include/Packets.h \
+	src/include/PacketInHandler.h \
+	src/include/JsonCmdExecutor.h \
+	src/include/AdvertManager.h \
+	src/include/udp.h \
+	src/include/dhcp.h \
+	src/include/arp.h \
 	src/include/cmd.h \
-	src/include/logging.h \
+	src/include/logging.h
+
+libagent_ovs_la_SOURCES = \
 	src/AgentLogHandler.cpp \
 	src/PolicyManager.cpp \
 	src/Endpoint.cpp \
@@ -91,7 +100,10 @@ libagent_ovs_la_SOURCES = \
 	src/WorkQueue.cpp \
 	src/IdGenerator.cpp \
 	src/RangeMask.cpp \
-	src/Packets.cpp
+	src/Packets.cpp \
+	src/PacketInHandler.cpp \
+	src/JsonCmdExecutor.cpp \
+	src/AdvertManager.cpp
 
 bin_PROGRAMS=agent_ovs
 agent_ovs_CXXFLAGS = -DSYSCONFDIR='"$(sysconfdir)"' $(OVS_ADDL_CFLAGS)
@@ -114,14 +126,19 @@ agent_test_CXXFLAGS = \
 agent_test_SOURCES = \
 	test/include/BaseFixture.h \
 	test/include/ModbFixture.h \
+	test/include/MockSwitchConnection.h \
+	test/include/MockPortMapper.h \
 	test/PolicyManager_test.cpp \
 	test/EndpointManager_test.cpp \
 	test/FlowManager_test.cpp \
+	test/PacketInHandler_test.cpp \
+	test/AdvertManager_test.cpp \
 	test/PortMapper_test.cpp \
 	test/FlowExecutor_test.cpp \
 	test/IdGenerator_test.cpp \
 	test/RangeMask_test.cpp \
 	test/Packets_test.cpp \
+	test/JsonCmdExecutor_test.cpp \
 	test/main.cpp
 agent_test_LDADD = \
 	libagent_ovs.la \
@@ -174,7 +191,7 @@ integration_test_LDADD = \
 
 check-integration: agent_ovs
 	$(top_builddir)/integration_test
-doc/html: $(model_include_HEADERS) $(libagent_ovs_la_SOURCES) doc/Doxyfile 
+doc/html: $(model_include_HEADERS) $(noinst_HEADERS) doc/Doxyfile
 	cd doc && ${DOXYGEN} Doxyfile
 doc: doc/html
 
@@ -183,7 +200,7 @@ clean-doc:
 clean-local: clean-doc
 	rm -f *.rpm
 
-EXTRA_DIST=rpm/agent-ovs.service opflex-agent-ovs.conf.in
+EXTRA_DIST=rpm/agent-ovs.service rpm/90-agent-ovs-sysctl.conf opflex-agent-ovs.conf.in
 
 CWD=`pwd`
 RPMFLAGS=--define "_topdir ${CWD}/rpm"

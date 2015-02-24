@@ -9,6 +9,12 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+/* This must be included before anything else */
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+
 #include <boost/make_shared.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/foreach.hpp>
@@ -232,11 +238,9 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
             }
         }
         
+        bool remoteUpdated = false;
         if (client.putIfModified(ci.getId(), uri, oi)) {
-            if (listener)
-                listener->remoteObjectUpdated(ci.getId(), uri);
-            if (notifs)
-                client.queueNotification(ci.getId(), uri, *notifs);
+            remoteUpdated = true;
         }
         if (mo.HasMember("parent_uri") && mo.HasMember("parent_subject")) {
             const Value& pname = mo["parent_uri"];
@@ -303,10 +307,14 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                             // this child isn't in the list of children
                             // set in the update
                             try {
+                                LOG(DEBUG) << "Removing missing child " << child
+                                           << " from updated parent " << uri;
                                 client.remove(it->second.getClassId(), child,
                                               true, notifs);
-                                if (notifs)
+                                if (notifs) {
                                     (*notifs)[child] = it->second.getClassId();
+                                    remoteUpdated = true;
+                                }
                             } catch (std::out_of_range e) {
                                 // most likely already removed by
                                 // another thread
@@ -316,6 +324,15 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                 }
             }
         }
+
+        if (remoteUpdated) {
+            LOG(DEBUG2) << "Updated object " << uri;
+            if (notifs)
+                client.queueNotification(ci.getId(), uri, *notifs);
+            if (listener)
+                listener->remoteObjectUpdated(ci.getId(), uri);
+        }
+
     } catch (std::out_of_range e) {
         // ignore unknown class
         LOG(DEBUG) << "Could not deserialize object of unknown class " 

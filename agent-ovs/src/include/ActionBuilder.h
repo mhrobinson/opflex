@@ -112,11 +112,15 @@ public:
      * Output the packet in a packet-out message to the controller
      * @param max_len the number of bytes of the packet to include
      */
-    void SetController(uint16_t max_len = 128);
+    void SetController(uint16_t max_len = 0xffff);
     /**
      * Push a VLAN tag onto the packet
      */
     void SetPushVlan();
+    /**
+     * Pop a VLAN tag from the packet
+     */
+    void SetPopVlan();
     /**
      * Use the connection tracking tables with the given zone and flags
      * @param zone the connection tracking zone to use
