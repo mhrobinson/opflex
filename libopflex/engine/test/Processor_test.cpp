@@ -81,7 +81,8 @@ public:
 class BasePFixture : public BaseFixture {
 public:
     BasePFixture() : processor(&db) {
-        processor.setDelay(5);
+        processor.setProcDelay(5);
+        processor.setRetryDelay(100);
         processor.setOpflexIdentity("testelement", "testdomain");
         processor.registerPeerStatusListener(&peerStatus);
     }
@@ -134,12 +135,7 @@ public:
 
 static bool itemPresent(StoreClient* client,
                         class_id_t class_id, const URI& uri) {
-    try {
-        client->get(class_id, uri);
-        return true;
-    } catch (std::out_of_range e) {
-        return false;
-    }
+    return client->isPresent(class_id, uri);
 }
 
 // Test garbage collection after removing references
@@ -240,6 +236,9 @@ void BasePFixture::testBootstrap(bool ssl) {
     BOOST_CHECK_EQUAL(PeerStatusListener::READY, peerStatus.statusMap[8010]);
     BOOST_CHECK_EQUAL(PeerStatusListener::HEALTHY, peerStatus.latestHealth);
 
+    BOOST_CHECK_EQUAL(std::string("location_string"),
+                      processor.getPool().getLocation().get());
+
     anycastServer.stop();
     peer1.stop();
     peer2.stop();
@@ -251,6 +250,12 @@ BOOST_FIXTURE_TEST_CASE( bootstrap, Fixture ) {
 
 BOOST_FIXTURE_TEST_CASE( bootstrap_ssl, SSLFixture ) {
     testBootstrap(true);
+}
+
+static bool make_flaky_pred(OpflexServerConnection* conn, void* user) {
+    MockServerHandler* handler = (MockServerHandler*)conn->getHandler();
+    handler->setFlaky(true);
+    return true;
 }
 
 class EndpointDeclFixture : public ServerFixture {
@@ -340,6 +345,7 @@ BOOST_FIXTURE_TEST_CASE( endpoint_declare, ServerFixture ) {
     notifs.clear();
 
     WAIT_FOR(rclient->get(2, u2_1)->isSet(15, PropertyInfo::MAC), 1000);
+    BOOST_REQUIRE(rclient->get(2, u2_1)->isSet(15, PropertyInfo::MAC));
     BOOST_CHECK_EQUAL(mac, rclient->get(2, u2_1)->getMAC(15));
     
     // check delete
@@ -351,6 +357,43 @@ BOOST_FIXTURE_TEST_CASE( endpoint_declare, ServerFixture ) {
     WAIT_FOR(!itemPresent(rclient, 2, u2_2), 1000);
     BOOST_CHECK(itemPresent(rclient, 2, u2_1));
     
+}
+
+// test endpoint_declare when the server is flaky
+BOOST_FIXTURE_TEST_CASE( endpoint_declare_flaky, ServerFixture ) {
+    startClient();
+    WAIT_FOR(connReady(processor.getPool(), LOCALHOST, 8009), 1000);
+
+    mockServer.getListener().applyConnPred(make_flaky_pred, NULL);
+
+    StoreClient::notif_t notifs;
+
+    URI u1("/");
+    shared_ptr<ObjectInstance> oi1 = make_shared<ObjectInstance>(1);
+    client1->put(1, u1, oi1);
+
+    // check add
+    URI u2_1("/class2/42/");
+    shared_ptr<ObjectInstance> oi2_1 = make_shared<ObjectInstance>(2);
+    oi2_1->setInt64(4, 42);
+    client1->put(2, u2_1, oi2_1);
+
+    URI u2_2("/class2/43/");
+    shared_ptr<ObjectInstance> oi2_2 = make_shared<ObjectInstance>(2);
+    oi2_2->setInt64(4, 43);
+    client1->put(2, u2_2, oi2_2);
+
+    client1->queueNotification(1, u1, notifs);
+    client1->queueNotification(2, u2_1, notifs);
+    client1->queueNotification(2, u2_2, notifs);
+    client1->deliverNotifications(notifs);
+    notifs.clear();
+
+    StoreClient* rclient = mockServer.getSystemClient();
+    WAIT_FOR(itemPresent(rclient, 2, u2_1), 1000);
+    WAIT_FOR(itemPresent(rclient, 2, u2_2), 1000);
+    shared_ptr<const ObjectInstance> roi2_2 = rclient->get(2, u2_2);
+    BOOST_CHECK_EQUAL(43, roi2_2->getInt64(4));
 }
 
 static bool resolutions_pred(OpflexServerConnection* conn, void* user) {
@@ -492,6 +535,25 @@ BOOST_FIXTURE_TEST_CASE( policy_resolve_reconnect, PolicyFixture ) {
     BOOST_CHECK_EQUAL("test2", client2->get(6, c6u)->getString(13));
 }
 
+// test policy resolve when the server is flaky
+BOOST_FIXTURE_TEST_CASE( policy_resolve_flaky, PolicyFixture ) {
+    startClient();
+    WAIT_FOR(connReady(processor.getPool(), LOCALHOST, 8009), 1000);
+
+    mockServer.getListener().applyConnPred(make_flaky_pred, NULL);
+    setup();
+
+    // verify that the object is synced to the client
+    BOOST_CHECK(itemPresent(client2, 5, c5u));
+    WAIT_FOR(processor.getRefCount(c4u) > 0, 1000);
+    WAIT_FOR(itemPresent(client2, 4, c4u), 1000);
+    WAIT_FOR(itemPresent(client2, 6, c6u), 1000);
+    BOOST_CHECK_EQUAL("test", client2->get(4, c4u)->getString(9));
+    BOOST_CHECK_EQUAL("test2", client2->get(6, c6u)->getString(13));
+
+    WAIT_FOR(mockServer.getListener().applyConnPred(resolutions_pred, NULL), 1000);
+}
+
 class StateFixture : public ServerFixture {
 public:
     StateFixture() 
@@ -554,6 +616,7 @@ BOOST_FIXTURE_TEST_CASE( state_report, StateFixture ) {
     notifs.clear();
 
     WAIT_FOR(rclient->get(3, u3)->isSet(16, PropertyInfo::STRING), 1000);
+    BOOST_REQUIRE(rclient->get(3, u3)->isSet(16, PropertyInfo::STRING));
     BOOST_CHECK_EQUAL("update", rclient->get(3, u3)->getString(16));
 }
 

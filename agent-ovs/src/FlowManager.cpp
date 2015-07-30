@@ -56,10 +56,24 @@ namespace ovsagent {
 const uint16_t FlowManager::MAX_POLICY_RULE_PRIORITY = 8192;     // arbitrary
 const long DEFAULT_SYNC_DELAY_ON_CONNECT_MSEC = 5000;
 
+// the OUT_MASK specified 7 bits that indicate the action to take in
+// the output table.  If nothing is set, then the action is to output
+// to the point in REG7
+const uint64_t METADATA_OUT_MASK = 0xff;
+
+// Resubmit to the first "dest" table with the source registers set to
+// the corresponding values for the EPG in REG7
+const uint64_t METADATA_RESUBMIT_DST = 0x1;
+
+// Perform "outbound" NAT action and then resubmit with the source EPG
+// set to the mapped NAT EPG
+const uint64_t METADATA_NAT_OUT = 0x2;
+
 static const char * ID_NMSPC_FD  = "floodDomain";
 static const char * ID_NMSPC_BD  = "bridgeDomain";
 static const char * ID_NMSPC_RD  = "routingDomain";
 static const char * ID_NMSPC_CON = "contract";
+static const char * ID_NMSPC_EXTNET = "externalNetwork";
 
 FlowManager::FlowManager(ovsagent::Agent& ag) :
         agent(ag), connection(NULL), executor(NULL), portMapper(NULL),
@@ -89,6 +103,7 @@ void FlowManager::Start()
     idGen.initNamespace(ID_NMSPC_BD);
     idGen.initNamespace(ID_NMSPC_RD);
     idGen.initNamespace(ID_NMSPC_CON);
+    idGen.initNamespace(ID_NMSPC_EXTNET);
 
     workQ.start();
 
@@ -175,7 +190,7 @@ void FlowManager::SetTunnelRemoteIp(const string& tunnelRemoteIp) {
     address tunDst = address::from_string(tunnelRemoteIp, ec);
     if (ec) {
         LOG(ERROR) << "Invalid tunnel destination IP: " 
-                   << tunnelRemoteIp << ": " << ec.message();;
+                   << tunnelRemoteIp << ": " << ec.message();
     } else if (tunDst.is_v6()) {
         LOG(ERROR) << "IPv6 tunnel destinations are not supported";
     } else {
@@ -244,7 +259,7 @@ ovs_be64 FlowManager::GetDHCPCookie(bool v4) {
 static void
 SetSourceAction(FlowEntry *fe, uint32_t epgId,
                 uint32_t bdId,  uint32_t fgrpId,  uint32_t l3Id,
-                uint8_t nextTable = FlowManager::DST_TABLE_ID,
+                uint8_t nextTable = FlowManager::BRIDGE_TABLE_ID,
                 FlowManager::EncapType encapType = FlowManager::ENCAP_NONE)
 {
     ActionBuilder ab;
@@ -291,7 +306,7 @@ SetSourceMatchEpg(FlowEntry *fe, FlowManager::EncapType encapType,
 static void
 SetDestMatchEpMac(FlowEntry *fe, uint16_t prio, const uint8_t *mac,
         uint32_t bdId) {
-    fe->entry->table_id = FlowManager::DST_TABLE_ID;
+    fe->entry->table_id = FlowManager::BRIDGE_TABLE_ID;
     fe->entry->priority = prio;
     match_set_dl_dst(&fe->entry->match, mac);
     match_set_reg(&fe->entry->match, 4 /* REG4 */, bdId);
@@ -303,43 +318,55 @@ static inline void fill_in6_addr(struct in6_addr& addr, const address_v6& ip) {
 }
 
 static void
-SetDestMatchEp(FlowEntry *fe, uint16_t prio, const uint8_t *specialMac,
-               const address& ip, uint32_t bdId, uint32_t l3Id) {
-    fe->entry->table_id = FlowManager::DST_TABLE_ID;
-    fe->entry->priority = prio;
-    match_set_dl_dst(&fe->entry->match, specialMac);
+AddMatchIp(FlowEntry *fe, const address& ip, bool src = false) {
     if (ip.is_v4()) {
         match_set_dl_type(&fe->entry->match, htons(ETH_TYPE_IP));
-        match_set_nw_dst(&fe->entry->match, htonl(ip.to_v4().to_ulong()));
+        if (src)
+            match_set_nw_src(&fe->entry->match, htonl(ip.to_v4().to_ulong()));
+        else
+            match_set_nw_dst(&fe->entry->match, htonl(ip.to_v4().to_ulong()));
     } else {
         struct in6_addr addr;
         fill_in6_addr(addr, ip.to_v6());
 
         match_set_dl_type(&fe->entry->match, htons(ETH_TYPE_IPV6));
-        match_set_ipv6_dst(&fe->entry->match, &addr);
+        if (src)
+            match_set_ipv6_src(&fe->entry->match, &addr);
+        else
+            match_set_ipv6_dst(&fe->entry->match, &addr);
     }
-    match_set_reg(&fe->entry->match, 4 /* REG6 */, bdId);
+}
+
+static void
+SetDestMatchEp(FlowEntry *fe, uint16_t prio, const uint8_t *mac,
+               const address& ip, uint32_t l3Id) {
+    fe->entry->table_id = FlowManager::ROUTE_TABLE_ID;
+    fe->entry->priority = prio;
+    if (mac)
+        match_set_dl_dst(&fe->entry->match, mac);
+    AddMatchIp(fe, ip);
     match_set_reg(&fe->entry->match, 6 /* REG6 */, l3Id);
 }
 
 static void
 SetDestMatchArp(FlowEntry *fe, uint16_t prio, const address& ip,
-        uint32_t l3Id) {
-    fe->entry->table_id = FlowManager::DST_TABLE_ID;
+                uint32_t bdId, uint32_t l3Id) {
+    fe->entry->table_id = FlowManager::BRIDGE_TABLE_ID;
     fe->entry->priority = prio;
     match *m = &fe->entry->match;
     match_set_dl_type(m, htons(ETH_TYPE_ARP));
     match_set_nw_proto(m, ARP_OP_REQUEST);
     match_set_dl_dst(m, packets::MAC_ADDR_BROADCAST);
     match_set_nw_dst(m, htonl(ip.to_v4().to_ulong()));
+    match_set_reg(m, 4 /* REG4 */, bdId);
     match_set_reg(m, 6 /* REG6 */, l3Id);
 }
 
 static void
 SetDestMatchNd(FlowEntry *fe, uint16_t prio, const address* ip,
-               uint32_t l3Id, uint64_t cookie = 0, 
+               uint32_t bdId, uint32_t rdId, uint64_t cookie = 0, 
                uint8_t type = ND_NEIGHBOR_SOLICIT) {
-    fe->entry->table_id = FlowManager::DST_TABLE_ID;
+    fe->entry->table_id = FlowManager::BRIDGE_TABLE_ID;
     if (cookie != 0)
         fe->entry->cookie = cookie;
     fe->entry->priority = prio;
@@ -349,7 +376,8 @@ SetDestMatchNd(FlowEntry *fe, uint16_t prio, const address* ip,
     match_set_tp_src(&fe->entry->match, htons(type));
     // OVS uses tp_dst for ICMPV6_CODE
     match_set_tp_dst(&fe->entry->match, 0);
-    match_set_reg(&fe->entry->match, 6 /* REG6 */, l3Id);
+    match_set_reg(&fe->entry->match, 4 /* REG4 */, bdId);
+    match_set_reg(&fe->entry->match, 6 /* REG6 */, rdId);
     match_set_dl_dst_masked(&fe->entry->match, 
                             packets::MAC_ADDR_MULTICAST,
                             packets::MAC_ADDR_MULTICAST);
@@ -379,6 +407,50 @@ SetMatchFd(FlowEntry *fe, uint16_t prio, uint32_t fgrpId, bool broadcast,
         match_set_dl_dst(m, dstMac);
 }
 
+static void
+AddMatchSubnet(FlowEntry *fe, address& ip, uint8_t prefixLen, bool src) {
+   if (ip.is_v4()) {
+       uint32_t mask = (prefixLen != 0)
+           ? (~((uint32_t)0) << (32 - prefixLen))
+           : 0;
+       uint32_t addr = ip.to_v4().to_ulong() & mask;
+       match_set_dl_type(&fe->entry->match, htons(ETH_TYPE_IP));
+       if (src)
+           match_set_nw_src_masked(&fe->entry->match, htonl(addr), htonl(mask));
+       else
+           match_set_nw_dst_masked(&fe->entry->match, htonl(addr), htonl(mask));
+   } else {
+       struct in6_addr mask;
+       struct in6_addr addr;
+       packets::compute_ipv6_subnet(ip.to_v6(), prefixLen, &mask, &addr);
+
+       match_set_dl_type(&fe->entry->match, htons(ETH_TYPE_IPV6));
+       if (src)
+           match_set_ipv6_src_masked(&fe->entry->match, &addr, &mask);
+       else
+           match_set_ipv6_dst_masked(&fe->entry->match, &addr, &mask);
+   }
+}
+
+static void
+SetMatchSubnet(FlowEntry *fe, uint32_t rdId,
+               uint16_t prioBase, uint8_t tableId,
+               address& ip, uint8_t prefixLen, bool src) {
+   fe->entry->table_id = tableId;
+
+   int prio = prioBase;
+   if (ip.is_v4()) {
+       if (prefixLen > 32) prefixLen = 32;
+       prio += 32 - prefixLen;
+   } else {
+       if (prefixLen > 128) prefixLen = 128;
+       prio += 128 - prefixLen;
+   }
+   fe->entry->priority = prio;
+   match_set_reg(&fe->entry->match, 6 /* REG6 */, rdId);
+   AddMatchSubnet(fe, ip, prefixLen, src);
+}
+
 void FlowManager::SetActionTunnelMetadata(ActionBuilder& ab,
                                           FlowManager::EncapType type,
                                           const address& tunDst) {
@@ -405,30 +477,21 @@ void FlowManager::SetActionTunnelMetadata(ActionBuilder& ab,
 }
 
 static void
-SetDestActionEpMac(FlowEntry *fe, FlowManager::EncapType type, bool isLocal, 
-                   uint32_t epgId, uint32_t port, const address& tunDst) {
+SetDestActionEpMac(FlowEntry *fe, uint32_t epgId, uint32_t port) {
     ActionBuilder ab;
     ab.SetRegLoad(MFF_REG2, epgId);
     ab.SetRegLoad(MFF_REG7, port);
-    if (!isLocal) {
-        FlowManager::SetActionTunnelMetadata(ab, type, tunDst);
-    }
     ab.SetGotoTable(FlowManager::POL_TABLE_ID);
 
     ab.Build(fe->entry);
 }
 
 static void
-SetDestActionEp(FlowEntry *fe, FlowManager::EncapType type, bool isLocal,  
-                uint32_t epgId, uint32_t port,
-                const address& tunDst, const uint8_t *specialMac, 
-                const uint8_t *dstMac) {
+SetDestActionEp(FlowEntry *fe, uint32_t epgId, uint32_t port,
+                const uint8_t *specialMac, const uint8_t *dstMac) {
     ActionBuilder ab;
     ab.SetRegLoad(MFF_REG2, epgId);
     ab.SetRegLoad(MFF_REG7, port);
-    if (!isLocal) {
-        FlowManager::SetActionTunnelMetadata(ab, type, tunDst);
-    }
     ab.SetEthSrcDst(specialMac, dstMac);
     ab.SetDecNwTtl();
     ab.SetGotoTable(FlowManager::POL_TABLE_ID);
@@ -437,15 +500,11 @@ SetDestActionEp(FlowEntry *fe, FlowManager::EncapType type, bool isLocal,
 }
 
 static void
-SetDestActionEpArp(FlowEntry *fe, FlowManager::EncapType type, bool isLocal, 
-                   uint32_t epgId, uint32_t port, const address& tunDst, 
+SetDestActionEpArp(FlowEntry *fe, uint32_t epgId, uint32_t port,
                    const uint8_t *dstMac) {
     ActionBuilder ab;
     ab.SetRegLoad(MFF_REG2, epgId);
     ab.SetRegLoad(MFF_REG7, port);
-    if (!isLocal) {
-        FlowManager::SetActionTunnelMetadata(ab, type, tunDst);
-    }
     ab.SetEthSrcDst(NULL, dstMac);
     ab.SetGotoTable(FlowManager::POL_TABLE_ID);
 
@@ -453,18 +512,56 @@ SetDestActionEpArp(FlowEntry *fe, FlowManager::EncapType type, bool isLocal,
 }
 
 static void
-SetDestActionSubnetArp(FlowEntry *fe, const uint8_t *specialMac,
-                       const address& gwIp) {
+SetDestActionArpReply(FlowEntry *fe, const uint8_t *mac, const address& ip,
+                      uint32_t outPort = OFPP_IN_PORT,
+                      FlowManager::EncapType type = FlowManager::ENCAP_NONE,
+                      const address* tunDst = NULL) {
     ActionBuilder ab;
     ab.SetRegMove(MFF_ETH_SRC, MFF_ETH_DST);
-    ab.SetRegLoad(MFF_ETH_SRC, specialMac);
+    ab.SetRegLoad(MFF_ETH_SRC, mac);
     ab.SetRegLoad16(MFF_ARP_OP, ARP_OP_REPLY);
     ab.SetRegMove(MFF_ARP_SHA, MFF_ARP_THA);
-    ab.SetRegLoad(MFF_ARP_SHA, specialMac);
+    ab.SetRegLoad(MFF_ARP_SHA, mac);
     ab.SetRegMove(MFF_ARP_SPA, MFF_ARP_TPA);
-    ab.SetRegLoad(MFF_ARP_SPA, gwIp.to_v4().to_ulong());
-    ab.SetOutputToPort(OFPP_IN_PORT);
+    ab.SetRegLoad(MFF_ARP_SPA, ip.to_v4().to_ulong());
+    if (type != FlowManager::ENCAP_NONE)
+        FlowManager::SetActionTunnelMetadata(ab, type, *tunDst);
+    ab.SetOutputToPort(outPort);
 
+    ab.Build(fe->entry);
+}
+
+static void
+AddActionRevNatDest(ActionBuilder& ab, uint32_t epgVnid, uint32_t bdId,
+                    uint32_t fgrpId, uint32_t rdId, uint32_t ofPort) {
+    ab.SetRegLoad(MFF_REG2, epgVnid);
+    ab.SetRegLoad(MFF_REG4, bdId);
+    ab.SetRegLoad(MFF_REG5, fgrpId);
+    ab.SetRegLoad(MFF_REG6, rdId);
+    ab.SetRegLoad(MFF_REG7, ofPort);
+    ab.SetGotoTable(FlowManager::NAT_IN_TABLE_ID);
+}
+
+static void
+SetActionRevNatDest(FlowEntry *fe, uint32_t epgVnid, uint32_t bdId,
+                    uint32_t fgrpId, uint32_t rdId, uint32_t ofPort,
+                    const uint8_t* routerMac) {
+    ActionBuilder ab;
+    ab.SetEthSrcDst(routerMac, NULL);
+    AddActionRevNatDest(ab, epgVnid, bdId, fgrpId, rdId, ofPort);
+    ab.Build(fe->entry);
+}
+
+static void
+SetActionRevDNatDest(FlowEntry *fe, uint32_t epgVnid, uint32_t bdId,
+                     uint32_t fgrpId, uint32_t rdId, uint32_t ofPort,
+                     const uint8_t* routerMac, const uint8_t* macAddr,
+                     address& mappedIp) {
+    ActionBuilder ab;
+    ab.SetEthSrcDst(routerMac, macAddr);
+    ab.SetIpDst(mappedIp);
+    ab.SetDecNwTtl();
+    AddActionRevNatDest(ab, epgVnid, bdId, fgrpId, rdId, ofPort);
     ab.Build(fe->entry);
 }
 
@@ -493,10 +590,13 @@ SetActionGotoLearn(FlowEntry *fe) {
 
 static void
 SetActionController(FlowEntry *fe, uint32_t epgId = 0,
-                    uint16_t max_len = 0xffff) {
+                    uint16_t max_len = 0xffff,
+                    uint64_t metadata = 0) {
     ActionBuilder ab;
     if (epgId != 0)
         ab.SetRegLoad(MFF_REG0, epgId);
+    if (metadata)
+        ab.SetRegLoad64(MFF_METADATA, metadata);
     ab.SetController(max_len);
     ab.Build(fe->entry);
 }
@@ -505,7 +605,7 @@ SetActionController(FlowEntry *fe, uint32_t epgId = 0,
 static void
 SetPolicyActionAllow(FlowEntry *fe) {
     ActionBuilder ab;
-    ab.SetOutputReg(MFF_REG7);
+    ab.SetGotoTable(FlowManager::OUT_TABLE_ID);
     ab.Build(fe->entry);
 }
 
@@ -515,18 +615,18 @@ SetPolicyActionConntrack(FlowEntry *fe, uint16_t zone, uint16_t flags,
     ActionBuilder ab;
     ab.SetConntrack(zone, flags);
     if (output) {
-        ab.SetOutputReg(MFF_REG7);
+        ab.SetGotoTable(FlowManager::OUT_TABLE_ID);
     }
     ab.Build(fe->entry);
 }
 
 static void
-SetPolicyMatchEpgs(FlowEntry *fe, uint16_t prio,
-        uint32_t sEpgId, uint32_t dEpgId) {
+SetPolicyMatchGroup(FlowEntry *fe, uint16_t prio,
+                    uint32_t svnid, uint32_t dvnid) {
     fe->entry->table_id = FlowManager::POL_TABLE_ID;
     fe->entry->priority = prio;
-    match_set_reg(&fe->entry->match, 0 /* REG0 */, sEpgId);
-    match_set_reg(&fe->entry->match, 2 /* REG2 */, dEpgId);
+    match_set_reg(&fe->entry->match, 0 /* REG0 */, svnid);
+    match_set_reg(&fe->entry->match, 2 /* REG2 */, dvnid);
 }
 
 /** Security table */
@@ -729,7 +829,7 @@ void FlowManager::PeerConnected() {
 bool
 FlowManager::GetGroupForwardingInfo(const URI& epgURI, uint32_t& vnid,
                                     optional<URI>& rdURI, uint32_t& rdId, 
-                                    uint32_t& bdId,
+                                    optional<URI>& bdURI, uint32_t& bdId,
                                     optional<URI>& fgrpURI, uint32_t& fgrpId) {
     PolicyManager& polMgr = agent.getPolicyManager();
     optional<uint32_t> epgVnid = polMgr.getVnidForGroup(epgURI);
@@ -745,9 +845,11 @@ FlowManager::GetGroupForwardingInfo(const URI& epgURI, uint32_t& vnid,
         return false;
     }
 
-    rdId = 0;
-    bdId = epgBd ?
-            GetId(BridgeDomain::CLASS_ID, epgBd.get()->getURI()) : 0;
+    bdId = 0;
+    if (epgBd) {
+        bdURI = epgBd.get()->getURI();
+        bdId = GetId(BridgeDomain::CLASS_ID, bdURI.get());
+    }
     fgrpId = 0;
     if (epgFd) {    // FD present -> flooding is desired
         if (floodScope == ENDPOINT_GROUP) {
@@ -757,6 +859,7 @@ FlowManager::GetGroupForwardingInfo(const URI& epgURI, uint32_t& vnid,
         }
         fgrpId = GetId(FloodDomain::CLASS_ID, fgrpURI.get());
     }
+    rdId = 0;
     if (epgRd) {
         rdURI = epgRd.get()->getURI();
         rdId = GetId(RoutingDomain::CLASS_ID, rdURI.get());
@@ -785,6 +888,155 @@ static uint8_t getEffectiveRoutingMode(PolicyManager& polMgr,
     return routingMode;
 }
 
+static void computeIpmFlows(FlowManager& flowMgr,
+                            FlowEntryList& elSrc, FlowEntryList& elBridgeDst,
+                            FlowEntryList& elRouteDst,FlowEntryList& elOutput,
+                            const uint8_t* macAddr, uint32_t ofPort,
+                            uint32_t epgVnid, uint32_t rdId,
+                            uint32_t bdId, uint32_t fgrpId,
+                            uint32_t fepgVnid, uint32_t frdId,
+                            uint32_t fbdId, uint32_t ffdId,
+                            address& mappedIp, address& floatingIp,
+                            uint32_t nextHopPort, const uint8_t* nextHopMac) {
+    const uint8_t* effNextHopMac =
+        nextHopMac ? nextHopMac : flowMgr.GetRouterMacAddr();
+
+    if (!floatingIp.is_unspecified()) {
+        {
+            // floating IP destination within the same EPG
+            // Set up reverse DNAT
+            FlowEntry* ipmRoute = new FlowEntry();
+            SetDestMatchEp(ipmRoute, 452, NULL, floatingIp, frdId);
+            match_set_reg(&ipmRoute->entry->match, 0 /* REG0 */, fepgVnid);
+            SetActionRevDNatDest(ipmRoute, epgVnid, bdId,
+                                 fgrpId, rdId, ofPort,
+                                 flowMgr.GetRouterMacAddr(),
+                                 macAddr, mappedIp);
+
+            elRouteDst.push_back(FlowEntryPtr(ipmRoute));
+        }
+        {
+            // Floating IP destination across EPGs
+            // Apply policy for source EPG -> floating IP EPG
+            // then resubmit with source EPG set to floating
+            // IP EPG
+
+            FlowEntry* ipmResub = new FlowEntry();
+            SetDestMatchEp(ipmResub, 450, NULL, floatingIp, frdId);
+            ActionBuilder ab;
+            ab.SetRegLoad(MFF_REG2, fepgVnid);
+            ab.SetRegLoad(MFF_REG7, fepgVnid);
+            ab.SetWriteMetadata(METADATA_RESUBMIT_DST,
+                                METADATA_OUT_MASK);
+            ab.SetGotoTable(FlowManager::POL_TABLE_ID);
+            ab.Build(ipmResub->entry);
+
+            elRouteDst.push_back(FlowEntryPtr(ipmResub));
+        }
+        // Reply to discovery requests for the floating IP
+        // address
+        if (floatingIp.is_v4()) {
+            uint32_t tunPort = flowMgr.GetTunnelPort();
+            if (tunPort != OFPP_NONE &&
+                flowMgr.GetEncapType() != FlowManager::ENCAP_NONE) {
+                FlowEntry* ipmArpTun = new FlowEntry();
+                SetDestMatchArp(ipmArpTun, 21, floatingIp,
+                                fbdId, frdId);
+                match_set_in_port(&ipmArpTun->entry->match, tunPort);
+                SetDestActionArpReply(ipmArpTun, macAddr, floatingIp,
+                                      OFPP_IN_PORT, flowMgr.GetEncapType(),
+                                      &flowMgr.GetTunnelDst());
+                elBridgeDst.push_back(FlowEntryPtr(ipmArpTun));
+            }
+            {
+                FlowEntry* ipmArp = new FlowEntry();
+                SetDestMatchArp(ipmArp, 20, floatingIp, fbdId, frdId);
+                SetDestActionArpReply(ipmArp, macAddr, floatingIp);
+                elBridgeDst.push_back(FlowEntryPtr(ipmArp));
+            }
+        } else {
+            FlowEntry* ipmND = new FlowEntry();
+            // pass MAC address in flow metadata
+            uint64_t metadata = 0;
+            memcpy(&metadata, macAddr, 6);
+            ((uint8_t*)&metadata)[7] = 1;
+            SetDestMatchNd(ipmND, 20, &floatingIp, fbdId, frdId,
+                           FlowManager::GetNDCookie());
+            SetActionController(ipmND, fepgVnid, 0xffff, metadata);
+            elBridgeDst.push_back(FlowEntryPtr(ipmND));
+        }
+    }
+    {
+        // Apply NAT action in output table
+        FlowEntry* ipmNatOut = new FlowEntry();
+        ipmNatOut->entry->table_id = FlowManager::OUT_TABLE_ID;
+        ipmNatOut->entry->priority = 10;
+        match_set_metadata_masked(&ipmNatOut->entry->match,
+                                  htonll(METADATA_NAT_OUT),
+                                  htonll(METADATA_OUT_MASK));
+        match_set_reg(&ipmNatOut->entry->match, 6 /* REG6 */, rdId);
+        match_set_reg(&ipmNatOut->entry->match, 7 /* REG7 */, fepgVnid);
+        AddMatchIp(ipmNatOut, mappedIp, true);
+
+        ActionBuilder ab;
+        ab.SetEthSrcDst(macAddr, effNextHopMac);
+        if (!floatingIp.is_unspecified()) {
+            ab.SetIpSrc(floatingIp);
+        }
+        ab.SetDecNwTtl();
+
+        if (nextHopPort == OFPP_NONE) {
+            ab.SetRegLoad(MFF_REG0, fepgVnid);
+            ab.SetRegLoad(MFF_REG4, fbdId);
+            ab.SetRegLoad(MFF_REG5, ffdId);
+            ab.SetRegLoad(MFF_REG6, frdId);
+            ab.SetRegLoad(MFF_REG7, (uint32_t)0);
+            ab.SetRegLoad64(MFF_METADATA, 0);
+            ab.SetResubmit(OFPP_IN_PORT, FlowManager::BRIDGE_TABLE_ID);
+        } else {
+            ab.SetRegLoad(MFF_PKT_MARK, rdId);
+            ab.SetOutputToPort(nextHopPort);
+        }
+        ab.Build(ipmNatOut->entry);
+
+        elOutput.push_back(FlowEntryPtr(ipmNatOut));
+    }
+
+    // Handle traffic returning from a next hop interface
+    if (nextHopPort != OFPP_NONE) {
+        if (!floatingIp.is_unspecified()) {
+            // reverse traffic from next hop interface where we
+            // delivered with a DNAT to a floating IP.  We assume that
+            // the destination IP is unique for a given next hop
+            // interface.
+            FlowEntry* ipmNextHopRev = new FlowEntry();
+            SetSourceMatchEp(ipmNextHopRev, 201,
+                             nextHopPort, effNextHopMac);
+            AddMatchIp(ipmNextHopRev, floatingIp);
+            SetActionRevDNatDest(ipmNextHopRev, epgVnid, bdId,
+                                 fgrpId, rdId, ofPort,
+                                 flowMgr.GetRouterMacAddr(),
+                                 macAddr, mappedIp);
+            elSrc.push_back(FlowEntryPtr(ipmNextHopRev));
+        }
+        {
+            // Reverse traffic from next hop interface where we
+            // delivered with an SKB mark.  The SKB mark must be set
+            // to the routing domain for the mapped destination IP
+            // address
+            FlowEntry* ipmNextHopRevMark = new FlowEntry();
+            SetSourceMatchEp(ipmNextHopRevMark, 200,
+                             nextHopPort, effNextHopMac);
+            match_set_pkt_mark(&ipmNextHopRevMark->entry->match, rdId);
+            AddMatchIp(ipmNextHopRevMark, mappedIp);
+            SetActionRevNatDest(ipmNextHopRevMark, epgVnid, bdId,
+                                fgrpId, rdId, ofPort,
+                                nextHopMac ? flowMgr.GetRouterMacAddr() : NULL);
+            elSrc.push_back(FlowEntryPtr(ipmNextHopRevMark));
+        }
+    }
+}
+
 void
 FlowManager::HandleEndpointUpdate(const string& uuid) {
 
@@ -796,7 +1048,8 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
     if (!epWrapper) {   // EP removed
         WriteFlow(uuid, SEC_TABLE_ID, NULL);
         WriteFlow(uuid, SRC_TABLE_ID, NULL);
-        WriteFlow(uuid, DST_TABLE_ID, NULL);
+        WriteFlow(uuid, BRIDGE_TABLE_ID, NULL);
+        WriteFlow(uuid, ROUTE_TABLE_ID, NULL);
         WriteFlow(uuid, LEARN_TABLE_ID, NULL);
         RemoveEndpointFromFloodGroup(uuid);
         return;
@@ -825,11 +1078,10 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
     if (ofPortName && portMapper) {
         ofPort = portMapper->FindPort(ofPortName.get());
     }
-    bool isLocalEp = (ofPort != OFPP_NONE);
 
     /* Port security flows */
-    if (isLocalEp) {
-        FlowEntryList el;
+    FlowEntryList el;
+    if (ofPort != OFPP_NONE) {
 
         if (endPoint.isPromiscuousMode()) {
             FlowEntry *e0 = new FlowEntry();
@@ -861,8 +1113,8 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
                 }
             }
         }
-        WriteFlow(uuid, SEC_TABLE_ID, el);
     }
+    WriteFlow(uuid, SEC_TABLE_ID, el);
 
     optional<URI> epgURI = epMgr.getComputedEPG(uuid);
     if (!epgURI) {      // can't do much without EPG
@@ -870,9 +1122,9 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
     }
 
     uint32_t epgVnid, rdId, bdId, fgrpId;
-    optional<URI> fgrpURI, rdURI;
-    if (!GetGroupForwardingInfo(epgURI.get(), epgVnid, rdURI, rdId,
-                                bdId, fgrpURI, fgrpId)) {
+    optional<URI> fgrpURI, bdURI, rdURI;
+    if (!GetGroupForwardingInfo(epgURI.get(), epgVnid, rdURI,
+                                rdId, bdURI, bdId, fgrpURI, fgrpId)) {
         return;
     }
 
@@ -883,11 +1135,9 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
     uint8_t ndMode = AddressResModeEnumT::CONST_UNICAST;
     uint8_t floodMode = UnknownFloodModeEnumT::CONST_DROP;
     if (fd) {
-        /**
-         * Irrespective of flooding scope (epg vs. flood-domain), the
-         * properties of the flood-domain object decide how flooding is
-         * done.
-         */
+        // Irrespective of flooding scope (epg vs. flood-domain), the
+        // properties of the flood-domain object decide how flooding
+        // is done.
 
         arpMode = fd.get()
             ->getArpMode(AddressResModeEnumT::CONST_UNICAST);
@@ -897,19 +1147,19 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
             ->getUnknownFloodMode(UnknownFloodModeEnumT::CONST_DROP);
     }
 
-    uint8_t routingMode =
-        getEffectiveRoutingMode(agent.getPolicyManager(), epgURI.get());
+    FlowEntryList elSrc;
+    FlowEntryList elEpLearn;
+    FlowEntryList elBridgeDst;
+    FlowEntryList elRouteDst;
+    FlowEntryList elOutput;
 
     /* Source Table flows; applicable only to local endpoints */
-    FlowEntryList src;
-    FlowEntryList epLearn;
-
-    if (isLocalEp) {
+    if (ofPort != OFPP_NONE) {
         if (hasMac) {
             FlowEntry *e0 = new FlowEntry();
             SetSourceMatchEp(e0, 140, ofPort, macAddr);
             SetSourceAction(e0, epgVnid, bdId, fgrpId, rdId);
-            src.push_back(FlowEntryPtr(e0));
+            elSrc.push_back(FlowEntryPtr(e0));
 
             if (floodMode == UnknownFloodModeEnumT::CONST_FLOOD) {
                 // Prepopulate a stage1 learning entry for known EPs
@@ -921,7 +1171,7 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
                 ab.SetOutputToPort(ofPort);
                 ab.SetController();
                 ab.Build(learnEntry->entry);
-                epLearn.push_back(FlowEntryPtr(learnEntry));
+                elEpLearn.push_back(FlowEntryPtr(learnEntry));
             }
         }
 
@@ -932,7 +1182,7 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
             FlowEntry *e1 = new FlowEntry();
             SetSourceMatchEp(e1, 138, ofPort, NULL);
             SetSourceAction(e1, epgVnid, bdId, fgrpId, rdId, LEARN_TABLE_ID);
-            src.push_back(FlowEntryPtr(e1));
+            elSrc.push_back(FlowEntryPtr(e1));
 
             // Multicast traffic from promiscuous ports is delivered
             // normally
@@ -942,7 +1192,7 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
                                     packets::MAC_ADDR_BROADCAST,
                                     packets::MAC_ADDR_MULTICAST);
             SetSourceAction(e2, epgVnid, bdId, fgrpId, rdId);
-            src.push_back(FlowEntryPtr(e2));
+            elSrc.push_back(FlowEntryPtr(e2));
         }
 
         if (virtualDHCPEnabled && hasMac) {
@@ -955,7 +1205,7 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
                 SetMatchDHCP(dhcp, FlowManager::SRC_TABLE_ID, 150, true,
                              GetDHCPCookie(true));
                 SetActionController(dhcp, epgVnid, 0xffff);
-                src.push_back(FlowEntryPtr(dhcp));
+                elSrc.push_back(FlowEntryPtr(dhcp));
             }
             if (v6c) {
                 FlowEntry* dhcp = new FlowEntry();
@@ -963,68 +1213,111 @@ FlowManager::HandleEndpointUpdate(const string& uuid) {
                 SetMatchDHCP(dhcp, FlowManager::SRC_TABLE_ID, 150, false,
                              GetDHCPCookie(false));
                 SetActionController(dhcp, epgVnid, 0xffff);
-                src.push_back(FlowEntryPtr(dhcp));
+                elSrc.push_back(FlowEntryPtr(dhcp));
             }
         }
     }
-    WriteFlow(uuid, SRC_TABLE_ID, src);
-    WriteFlow(uuid, LEARN_TABLE_ID, epLearn);
 
-    FlowEntryList elDst;
-    uint32_t epPort = isLocalEp ? ofPort : GetTunnelPort();
-
-    if (bdId != 0 && hasMac && epPort != OFPP_NONE) {
+    /* Bridge, route, and output flows */
+    if (bdId != 0 && hasMac && ofPort != OFPP_NONE) {
         FlowEntry *e0 = new FlowEntry();
         SetDestMatchEpMac(e0, 10, macAddr, bdId);
-        SetDestActionEpMac(e0, encapType, isLocalEp, epgVnid, epPort,
-                           GetTunnelDst());
-        elDst.push_back(FlowEntryPtr(e0));
+        SetDestActionEpMac(e0, epgVnid, ofPort);
+        elBridgeDst.push_back(FlowEntryPtr(e0));
     }
 
-    if (rdId != 0 && epPort != OFPP_NONE) {
-        BOOST_FOREACH (const address& ipAddr, ipAddresses) {
-            if (virtualRouterEnabled &&
-                routingMode == RoutingModeEnumT::CONST_ENABLED) {
-                const uint8_t *dstMac = isLocalEp ?
-                    (hasMac ? macAddr : NULL) : NULL;
-                FlowEntry *e0 = new FlowEntry();
-                SetDestMatchEp(e0, 15, GetRouterMacAddr(), ipAddr, bdId, rdId);
-                SetDestActionEp(e0, encapType, isLocalEp, epgVnid, epPort,
-                                GetTunnelDst(), GetRouterMacAddr(),
-                                dstMac);
-                elDst.push_back(FlowEntryPtr(e0));
+    if (rdId != 0 && bdId != 0 && ofPort != OFPP_NONE) {
+        uint8_t routingMode =
+            getEffectiveRoutingMode(agent.getPolicyManager(), epgURI.get());
+
+        if (virtualRouterEnabled && hasMac &&
+            routingMode == RoutingModeEnumT::CONST_ENABLED) {
+            BOOST_FOREACH (const address& ipAddr, ipAddresses) {
+                {
+                    FlowEntry *e0 = new FlowEntry();
+                    SetDestMatchEp(e0, 500, GetRouterMacAddr(), ipAddr, rdId);
+                    SetDestActionEp(e0, epgVnid, ofPort, GetRouterMacAddr(),
+                                    macAddr);
+                    elRouteDst.push_back(FlowEntryPtr(e0));
+                }
+
+                if (arpMode != AddressResModeEnumT::CONST_FLOOD && ipAddr.is_v4()) {
+                    FlowEntry *e1 = new FlowEntry();
+                    SetDestMatchArp(e1, 20, ipAddr, bdId, rdId);
+                    if (arpMode == AddressResModeEnumT::CONST_UNICAST) {
+                        // ARP optimization: broadcast -> unicast
+                        SetDestActionEpArp(e1, epgVnid, ofPort, macAddr);
+                    }
+                    // else drop the ARP packet
+                    elBridgeDst.push_back(FlowEntryPtr(e1));
+                }
+
+                if (ndMode != AddressResModeEnumT::CONST_FLOOD && ipAddr.is_v6()) {
+                    FlowEntry *e1 = new FlowEntry();
+                    SetDestMatchNd(e1, 20, &ipAddr, bdId, rdId);
+                    if (ndMode == AddressResModeEnumT::CONST_UNICAST) {
+                        // neighbor discovery optimization: broadcast -> unicast
+                        SetDestActionEpArp(e1, epgVnid, ofPort, macAddr);
+                    }
+                    // else drop the ND packet
+                    elBridgeDst.push_back(FlowEntryPtr(e1));
+                }
             }
 
-            if (arpMode != AddressResModeEnumT::CONST_FLOOD && ipAddr.is_v4()) {
-                FlowEntry *e1 = new FlowEntry();
-                SetDestMatchArp(e1, 20, ipAddr, rdId);
-                if (arpMode == AddressResModeEnumT::CONST_UNICAST) {
-                    // ARP optimization: broadcast -> unicast
-                    SetDestActionEpArp(e1, encapType, isLocalEp, epgVnid,
-                                       epPort, GetTunnelDst(), 
-                                       hasMac ? macAddr : NULL);
-                }
-                // else drop the ARP packet
-                elDst.push_back(FlowEntryPtr(e1));
-            }
+            // IP address mappings
+            BOOST_FOREACH (const Endpoint::IPAddressMapping& ipm,
+                           endPoint.getIPAddressMappings()) {
+                if (!ipm.getMappedIP() || !ipm.getEgURI())
+                    continue;
 
-            if (ndMode != AddressResModeEnumT::CONST_FLOOD && ipAddr.is_v6()) {
-                FlowEntry *e1 = new FlowEntry();
-                SetDestMatchNd(e1, 20, &ipAddr, rdId);
-                if (ndMode == AddressResModeEnumT::CONST_UNICAST) {
-                    // neighbor discovery optimization: broadcast -> unicast
-                    SetDestActionEpArp(e1, encapType, isLocalEp, epgVnid,
-                                       epPort, GetTunnelDst(), 
-                                       hasMac ? macAddr : NULL);
+                address mappedIp =
+                    address::from_string(ipm.getMappedIP().get(), ec);
+                if (ec) continue;
+
+                address floatingIp;
+                if (ipm.getFloatingIP()) {
+                    floatingIp =
+                        address::from_string(ipm.getFloatingIP().get(), ec);
+                    if (ec) continue;
+                    if (floatingIp.is_v4() != mappedIp.is_v4()) continue;
                 }
-                // else drop the ND packet
-                elDst.push_back(FlowEntryPtr(e1));
+
+                uint32_t fepgVnid, frdId, fbdId, ffdId;
+                optional<URI> ffdURI, fbdURI, frdURI;
+                if (!GetGroupForwardingInfo(ipm.getEgURI().get(), fepgVnid,
+                                            frdURI, frdId, fbdURI, fbdId,
+                                            ffdURI, ffdId))
+                    continue;
+
+                uint32_t nextHop = OFPP_NONE;
+                if (ipm.getNextHopIf() && portMapper) {
+                    nextHop = portMapper->FindPort(ipm.getNextHopIf().get());
+                    if (nextHop == OFPP_NONE) continue;
+                }
+                uint8_t nextHopMac[6];
+                const uint8_t* nextHopMacp = NULL;
+                if (ipm.getNextHopMAC()) {
+                    ipm.getNextHopMAC().get().toUIntArray(nextHopMac);
+                    nextHopMacp = nextHopMac;
+                }
+
+                computeIpmFlows(*this, elSrc, elBridgeDst, elRouteDst,
+                                elOutput, macAddr, ofPort,
+                                epgVnid, rdId, bdId, fgrpId,
+                                fepgVnid, frdId, fbdId, ffdId,
+                                mappedIp, floatingIp, nextHop,
+                                nextHopMacp);
             }
         }
     }
-    WriteFlow(uuid, DST_TABLE_ID, elDst);
 
-    if (fgrpURI && isLocalEp) {
+    WriteFlow(uuid, SRC_TABLE_ID, elSrc);
+    WriteFlow(uuid, LEARN_TABLE_ID, elEpLearn);
+    WriteFlow(uuid, BRIDGE_TABLE_ID, elBridgeDst);
+    WriteFlow(uuid, ROUTE_TABLE_ID, elRouteDst);
+    WriteFlow(uuid, OUT_TABLE_ID, elOutput);
+
+    if (fgrpURI && ofPort != OFPP_NONE) {
         UpdateEndpointFloodGroup(fgrpURI.get(), endPoint, ofPort,
                                  endPoint.isPromiscuousMode(),
                                  fd);
@@ -1090,33 +1383,63 @@ FlowManager::HandleEndpointGroupDomainUpdate(const URI& epgURI) {
         WriteFlow("static", SEC_TABLE_ID, fixedFlows);
     }
 
-    FlowEntry *unknownTunnel = NULL;
-    if (fallbackMode == FALLBACK_PROXY && tunPort != OFPP_NONE && 
-        encapType != ENCAP_NONE) {
-        // Output to the tunnel interface, bypassing policy
-        // note that if the flood domain is set to flood unknown, then
-        // there will be a higher-priority rule installed for that
-        // flood domain.
-        unknownTunnel = new FlowEntry();
-        unknownTunnel->entry->priority = 1;
-        unknownTunnel->entry->table_id = DST_TABLE_ID;
-        SetDestActionOutputToTunnel(unknownTunnel, encapType,
-                                    GetTunnelDst(), tunPort);
+    {
+        FlowEntry *unknownTunnelBr = NULL;
+        FlowEntry *unknownTunnelRt = NULL;
+        if (fallbackMode == FALLBACK_PROXY && tunPort != OFPP_NONE && 
+            encapType != ENCAP_NONE) {
+            // Output to the tunnel interface, bypassing policy
+            // note that if the flood domain is set to flood unknown, then
+            // there will be a higher-priority rule installed for that
+            // flood domain.
+            unknownTunnelBr = new FlowEntry();
+            unknownTunnelBr->entry->priority = 1;
+            unknownTunnelBr->entry->table_id = BRIDGE_TABLE_ID;
+            SetDestActionOutputToTunnel(unknownTunnelBr, encapType,
+                                        GetTunnelDst(), tunPort);
+
+            if (virtualRouterEnabled) {
+                unknownTunnelRt = new FlowEntry();
+                unknownTunnelRt->entry->priority = 1;
+                unknownTunnelRt->entry->table_id = ROUTE_TABLE_ID;
+                SetDestActionOutputToTunnel(unknownTunnelRt, encapType,
+                                            GetTunnelDst(), tunPort);
+            }
+        }
+        WriteFlow("static", BRIDGE_TABLE_ID, unknownTunnelBr);
+        WriteFlow("static", ROUTE_TABLE_ID, unknownTunnelRt);
     }
-    WriteFlow("static", DST_TABLE_ID, unknownTunnel);
+    {
+        FlowEntryList outFlows;
+        {
+            FlowEntry* outputReg = new FlowEntry();
+            outputReg->entry->table_id = OUT_TABLE_ID;
+            outputReg->entry->priority = 1;
+            match_set_metadata_masked(&outputReg->entry->match,
+                                      0, htonll(METADATA_OUT_MASK));
+            ActionBuilder ab;
+            ab.SetOutputReg(MFF_REG7);
+            ab.Build(outputReg->entry);
+
+            outFlows.push_back(FlowEntryPtr(outputReg));
+        }
+
+        WriteFlow("static", OUT_TABLE_ID, outFlows);
+    }
 
     PolicyManager& polMgr = agent.getPolicyManager();
     if (!polMgr.groupExists(epgURI)) {  // EPG removed
         WriteFlow(epgId, SRC_TABLE_ID, NULL);
         WriteFlow(epgId, POL_TABLE_ID, NULL);
+        WriteFlow(epgId, OUT_TABLE_ID, NULL);
         updateMulticastList(boost::none, epgURI);
         return;
     }
 
     uint32_t epgVnid, rdId, bdId, fgrpId;
-    optional<URI> fgrpURI, rdURI;
-    if (!GetGroupForwardingInfo(epgURI, epgVnid, rdURI, 
-                                rdId, bdId, fgrpURI, fgrpId)) {
+    optional<URI> fgrpURI, bdURI, rdURI;
+    if (!GetGroupForwardingInfo(epgURI, epgVnid, rdURI, rdId,
+                                bdURI, bdId, fgrpURI, fgrpId)) {
         return;
     }
 
@@ -1134,7 +1457,7 @@ FlowManager::HandleEndpointGroupDomainUpdate(const URI& epgURI) {
                 ->getUnknownFloodMode(UnknownFloodModeEnumT::CONST_DROP);
         }
 
-        uint8_t nextTable = FlowManager::DST_TABLE_ID;
+        uint8_t nextTable = FlowManager::BRIDGE_TABLE_ID;
         if (floodMode == UnknownFloodModeEnumT::CONST_FLOOD)
             nextTable = FlowManager::LEARN_TABLE_ID;
 
@@ -1153,7 +1476,7 @@ FlowManager::HandleEndpointGroupDomainUpdate(const URI& epgURI) {
                                     packets::MAC_ADDR_BROADCAST,
                                     packets::MAC_ADDR_MULTICAST);
             SetSourceAction(e1, epgVnid, bdId, fgrpId, rdId,
-                            FlowManager::DST_TABLE_ID, encapType);
+                            FlowManager::BRIDGE_TABLE_ID, encapType);
             uplinkMatch.push_back(FlowEntryPtr(e1));
         }
     }
@@ -1168,37 +1491,81 @@ FlowManager::HandleEndpointGroupDomainUpdate(const URI& epgURI) {
 
     if (intraGroup == IntraGroupPolicyEnumT::CONST_ALLOW) {
         FlowEntry *e0 = new FlowEntry();
-        SetPolicyMatchEpgs(e0, 100, epgVnid, epgVnid);
+        SetPolicyMatchGroup(e0, 100, epgVnid, epgVnid);
         SetPolicyActionAllow(e0);
         WriteFlow(epgId, POL_TABLE_ID, e0);
     } else {
         WriteFlow(epgId, POL_TABLE_ID, NULL);
     }
 
-    if (rdId != 0) {
-        UpdateGroupSubnets(epgURI, rdId);
+    if (virtualRouterEnabled && rdId != 0 && bdId != 0) {
+        UpdateGroupSubnets(epgURI, bdId, rdId);
 
-        if (virtualRouterEnabled && routerAdv) {
-            uint8_t routingMode =
-                getEffectiveRoutingMode(agent.getPolicyManager(), epgURI);
+        FlowEntryList bridgel;
+        uint8_t routingMode =
+            getEffectiveRoutingMode(agent.getPolicyManager(), epgURI);
 
-            if (routingMode == RoutingModeEnumT::CONST_ENABLED) {
-                FlowEntry *e0 = new FlowEntry();
-                SetDestMatchNd(e0, 20, NULL, rdId, FlowManager::GetNDCookie(),
+        if (routingMode == RoutingModeEnumT::CONST_ENABLED) {
+            FlowEntry *br = new FlowEntry();
+            br->entry->priority = 2;
+            br->entry->table_id = BRIDGE_TABLE_ID;
+            match_set_reg(&br->entry->match, 4 /* REG4 */, bdId);
+            ActionBuilder ab;
+            ab.SetGotoTable(ROUTE_TABLE_ID);
+            ab.Build(br->entry);
+            bridgel.push_back(FlowEntryPtr(br));
+
+            if (routerAdv) {
+                FlowEntry *r = new FlowEntry();
+                SetDestMatchNd(r, 20, NULL, bdId, rdId, 
+                               FlowManager::GetNDCookie(),
                                ND_ROUTER_SOLICIT);
-                SetActionController(e0);
-                WriteFlow(rdURI.get().toString(), DST_TABLE_ID, e0);
+                SetActionController(r);
+                bridgel.push_back(FlowEntryPtr(r));
 
                 if (!isSyncing)
                     advertManager.scheduleInitialRouterAdv();
             }
         }
+        WriteFlow(bdURI.get().toString(), BRIDGE_TABLE_ID, bridgel);
     }
+
+    FlowEntryList egOutFlows;
+    {
+        // Output table action to resubmit the flow to the bridge
+        // table with source registers set to the current EPG
+        FlowEntry* resubmitDst = new FlowEntry();
+        resubmitDst->entry->table_id = OUT_TABLE_ID;
+        resubmitDst->entry->priority = 10;
+        match_set_reg(&resubmitDst->entry->match, 7 /* REG7 */, epgVnid);
+        match_set_metadata_masked(&resubmitDst->entry->match,
+                                  htonll(METADATA_RESUBMIT_DST),
+                                  htonll(METADATA_OUT_MASK));
+        ActionBuilder ab;
+        ab.SetRegLoad(MFF_REG0, epgVnid);
+        ab.SetRegLoad(MFF_REG4, bdId);
+        ab.SetRegLoad(MFF_REG5, fgrpId);
+        ab.SetRegLoad(MFF_REG6, rdId);
+        ab.SetRegLoad(MFF_REG7, (uint32_t)0);
+        ab.SetRegLoad64(MFF_METADATA, 0);
+        ab.SetResubmit(OFPP_IN_PORT, BRIDGE_TABLE_ID);
+        ab.Build(resubmitDst->entry);
+
+        egOutFlows.push_back(FlowEntryPtr(resubmitDst));
+    }
+    WriteFlow(epgId, OUT_TABLE_ID, egOutFlows);
 
     unordered_set<string> epUuids;
     agent.getEndpointManager().getEndpointsForGroup(epgURI, epUuids);
+    agent.getEndpointManager().getEndpointsForIPMGroup(epgURI, epUuids);
     BOOST_FOREACH(const string& ep, epUuids) {
         endpointUpdated(ep);
+    }
+
+    PolicyManager::uri_set_t contractURIs;
+    agent.getPolicyManager().getContractsForGroup(epgURI, contractURIs);
+    BOOST_FOREACH(const URI& contract, contractURIs) {
+        contractUpdated(contract);
     }
 
     optional<string> epgMcastIp = polMgr.getMulticastIPForGroup(epgURI);
@@ -1213,7 +1580,7 @@ FlowManager::HandleEndpointGroupDomainUpdate(const URI& epgURI) {
 }
 
 void
-FlowManager::UpdateGroupSubnets(const URI& egURI, uint32_t routingDomainId) {
+FlowManager::UpdateGroupSubnets(const URI& egURI, uint32_t bdId, uint32_t rdId) {
     PolicyManager::subnet_vector_t subnets;
     agent.getPolicyManager().getSubnetsForGroup(egURI, subnets);
 
@@ -1223,7 +1590,7 @@ FlowManager::UpdateGroupSubnets(const URI& egURI, uint32_t routingDomainId) {
         optional<const string&> networkAddrStr = sn->getAddress();
         bool hasRouterIp = false;
         boost::system::error_code ec;
-        if (virtualRouterEnabled && networkAddrStr) {
+        if (networkAddrStr) {
             address networkAddr, routerIp;
             networkAddr = address::from_string(networkAddrStr.get(), ec);
             if (ec) {
@@ -1254,54 +1621,190 @@ FlowManager::UpdateGroupSubnets(const URI& egURI, uint32_t routingDomainId) {
             if (hasRouterIp) {
                 if (routerIp.is_v4()) {
                     FlowEntry *e0 = new FlowEntry();
-                    SetDestMatchArp(e0, 20, routerIp, routingDomainId);
-                    SetDestActionSubnetArp(e0, GetRouterMacAddr(), routerIp);
+                    SetDestMatchArp(e0, 20, routerIp, bdId, rdId);
+                    SetDestActionArpReply(e0, GetRouterMacAddr(), routerIp);
                     el.push_back(FlowEntryPtr(e0));
                 } else {
                     FlowEntry *e0 = new FlowEntry();
-                    SetDestMatchNd(e0, 20, &routerIp, routingDomainId,
+                    SetDestMatchNd(e0, 20, &routerIp, bdId, rdId,
                                    FlowManager::GetNDCookie());
                     SetActionController(e0);
                     el.push_back(FlowEntryPtr(e0));
                 }
             }
         }
-        WriteFlow(sn->getURI().toString(), DST_TABLE_ID, el);
+        WriteFlow(sn->getURI().toString(), BRIDGE_TABLE_ID, el);
     }
+}
+
+void
+FlowManager::HandleRoutingDomainUpdate(const URI& rdURI) {
+    optional<shared_ptr<RoutingDomain > > rd =
+        RoutingDomain::resolve(agent.getFramework(), rdURI);
+
+    if (!rd) {
+        LOG(DEBUG) << "Cleaning up for RD: " << rdURI;
+        WriteFlow(rdURI.toString(), NAT_IN_TABLE_ID, NULL);
+        WriteFlow(rdURI.toString(), ROUTE_TABLE_ID, NULL);
+        idGen.erase(GetIdNamespace(RoutingDomain::CLASS_ID), rdURI);
+        return;
+    }
+
+    FlowEntryList rdRouteFlows;
+    FlowEntryList rdNatFlows;
+    boost::system::error_code ec;
+    uint32_t tunPort = GetTunnelPort();
+    uint32_t rdId = GetId(RoutingDomain::CLASS_ID, rdURI);
+
+    // For subnets internal to a routing domain, we want to perform
+    // ordinary routing without mapping to external network.  These
+    // rules are lower priority than the rules that will handle
+    // routing to endpoints that are local to this vswitch, so the
+    // action is to output to the uplink tunnel.  Match using
+    // longest-prefix.
+    vector<shared_ptr<RoutingDomainToIntSubnetsRSrc> > subnets_list;
+    rd.get()->resolveGbpRoutingDomainToIntSubnetsRSrc(subnets_list);
+    BOOST_FOREACH(shared_ptr<RoutingDomainToIntSubnetsRSrc>& subnets_ref,
+                  subnets_list) {
+        optional<URI> subnets_uri = subnets_ref->getTargetURI();
+        if (!subnets_uri) continue;
+        optional<shared_ptr<Subnets> > subnets_obj =
+            Subnets::resolve(agent.getFramework(), subnets_uri.get());
+        if (!subnets_obj) continue;
+        
+        vector<shared_ptr<Subnet> > subnets;
+        subnets_obj.get()->resolveGbpSubnet(subnets);
+
+        BOOST_FOREACH(shared_ptr<Subnet>& subnet, subnets) {
+            if (!subnet->isAddressSet() || !subnet->isPrefixLenSet())
+                continue;
+            address addr = address::from_string(subnet->getAddress().get(), ec);
+            if (ec) continue;
+
+            FlowEntry *snr = new FlowEntry();
+            SetMatchSubnet(snr, rdId, 300, ROUTE_TABLE_ID, addr,
+                           subnet->getPrefixLen(0), false);
+            if (fallbackMode == FALLBACK_PROXY && tunPort != OFPP_NONE &&
+                encapType != ENCAP_NONE) {
+                SetDestActionOutputToTunnel(snr, encapType,
+                                            GetTunnelDst(), tunPort);
+            }
+            rdRouteFlows.push_back(FlowEntryPtr(snr));
+        }
+    }
+
+    // If we miss the local endpoints and the internal subnets, check
+    // each of the external layer 3 networks.  Match using
+    // longest-prefix.
+    vector<shared_ptr<L3ExternalDomain> > extDoms;
+    rd.get()->resolveGbpL3ExternalDomain(extDoms);
+    BOOST_FOREACH(shared_ptr<L3ExternalDomain>& extDom, extDoms) {
+        vector<shared_ptr<L3ExternalNetwork> > extNets;
+        extDom->resolveGbpL3ExternalNetwork(extNets);
+
+        BOOST_FOREACH(shared_ptr<L3ExternalNetwork> net, extNets) {
+            uint32_t netVnid = getExtNetVnid(net->getURI());
+            vector<shared_ptr<ExternalSubnet> > extSubs;
+            net->resolveGbpExternalSubnet(extSubs);
+            optional<shared_ptr<L3ExternalNetworkToNatEPGroupRSrc> > natRef =
+                net->resolveGbpL3ExternalNetworkToNatEPGroupRSrc();
+            optional<uint32_t> natEpgVnid;
+            if (natRef) {
+                optional<URI> natEpg = natRef.get()->getTargetURI();
+                if (natEpg)
+                    natEpgVnid =
+                        agent.getPolicyManager().getVnidForGroup(natEpg.get());
+            }
+
+            BOOST_FOREACH(shared_ptr<ExternalSubnet> extsub, extSubs) {
+                if (!extsub->isAddressSet() || !extsub->isPrefixLenSet())
+                    continue;
+                address addr =
+                    address::from_string(extsub->getAddress().get(), ec);
+                if (ec) continue;
+
+                {
+                    FlowEntry *snr = new FlowEntry();
+                    SetMatchSubnet(snr, rdId, 150, ROUTE_TABLE_ID, addr,
+                                   extsub->getPrefixLen(0), false);
+
+                    if (natRef) {
+                        // For external networks mapped to a NAT EPG,
+                        // set the next hop action to NAT_OUT
+                        ActionBuilder ab;
+                        if (natEpgVnid) {
+                            ab.SetRegLoad(MFF_REG2, netVnid);
+                            ab.SetRegLoad(MFF_REG7, natEpgVnid.get());
+                            ab.SetWriteMetadata(METADATA_NAT_OUT,
+                                                METADATA_OUT_MASK);
+                            ab.SetGotoTable(POL_TABLE_ID);
+                            ab.Build(snr->entry);
+                        }
+                        // else drop until resolved
+                    } else if (fallbackMode == FALLBACK_PROXY &&
+                               tunPort != OFPP_NONE &&
+                               encapType != ENCAP_NONE) {
+                        // For other external networks, output to the tunnel
+                        SetDestActionOutputToTunnel(snr, encapType,
+                                                    GetTunnelDst(), tunPort);
+                    }
+                    // else drop the packets
+                    rdRouteFlows.push_back(FlowEntryPtr(snr));
+                }
+                {
+                    FlowEntry *snn = new FlowEntry();
+                    SetMatchSubnet(snn, rdId, 150, NAT_IN_TABLE_ID, addr,
+                                   extsub->getPrefixLen(0), true);
+                    ActionBuilder ab;
+                    ab.SetRegLoad(MFF_REG0, netVnid);
+                    ab.SetGotoTable(POL_TABLE_ID);
+                    ab.Build(snn->entry);
+                    rdNatFlows.push_back(FlowEntryPtr(snn));
+                }
+            }
+        }
+    }
+
+    WriteFlow(rdURI.toString(), NAT_IN_TABLE_ID, rdNatFlows);
+    WriteFlow(rdURI.toString(), ROUTE_TABLE_ID, rdRouteFlows);
+
 }
 
 void
 FlowManager::HandleDomainUpdate(class_id_t cid, const URI& domURI) {
     switch (cid) {
     case RoutingDomain::CLASS_ID:
-        if (!RoutingDomain::resolve(agent.getFramework(), domURI)) {
-            LOG(INFO) << "Cleaning up for RD: " << domURI;
-            WriteFlow(domURI.toString(), DST_TABLE_ID, NULL);
-            idGen.erase(GetIdNamespace(RoutingDomain::CLASS_ID), domURI);
-        }
+        HandleRoutingDomainUpdate(domURI);
         break;
     case Subnet::CLASS_ID:
         if (!Subnet::resolve(agent.getFramework(), domURI)) {
-            LOG(INFO) << "Cleaning up for Subnet: " << domURI;
-            WriteFlow(domURI.toString(), DST_TABLE_ID, NULL);
+            LOG(DEBUG) << "Cleaning up for Subnet: " << domURI;
+            WriteFlow(domURI.toString(), BRIDGE_TABLE_ID, NULL);
         }
         break;
     case BridgeDomain::CLASS_ID:
         if (!BridgeDomain::resolve(agent.getFramework(), domURI)) {
-            LOG(INFO) << "Cleaning up for BD: " << domURI;
+            LOG(DEBUG) << "Cleaning up for BD: " << domURI;
+            WriteFlow(domURI.toString(), BRIDGE_TABLE_ID, NULL);
             idGen.erase(GetIdNamespace(cid), domURI);
         }
         break;
     case FloodDomain::CLASS_ID:
         if (!FloodDomain::resolve(agent.getFramework(), domURI)) {
-            LOG(INFO) << "Cleaning up for FD: " << domURI;
+            LOG(DEBUG) << "Cleaning up for FD: " << domURI;
             idGen.erase(GetIdNamespace(cid), domURI);
         }
         break;
     case FloodContext::CLASS_ID:
         if (!FloodContext::resolve(agent.getFramework(), domURI)) {
-            LOG(INFO) << "Cleaning up for FloodContext: " << domURI;
+            LOG(DEBUG) << "Cleaning up for FloodContext: " << domURI;
             removeFromMulticastList(domURI);
+        }
+        break;
+    case L3ExternalNetwork::CLASS_ID:
+        if (!L3ExternalNetwork::resolve(agent.getFramework(), domURI)) {
+            LOG(DEBUG) << "Cleaning up for L3ExtNet: " << domURI;
+            idGen.erase(GetIdNamespace(cid), domURI);
         }
         break;
     }
@@ -1404,10 +1907,11 @@ FlowManager::UpdateEndpointFloodGroup(const opflex::modb::URI& fgrpURI,
     }
 
     FlowEntryList grpDst;
+    FlowEntryList learnDst;
 
     // deliver broadcast/multicast traffic to the group table
     FlowEntry *e0 = new FlowEntry();
-    SetMatchFd(e0, 10, fgrpId, true, DST_TABLE_ID);
+    SetMatchFd(e0, 10, fgrpId, true, BRIDGE_TABLE_ID);
     SetActionFdBroadcast(e0, fgrpId);
     grpDst.push_back(FlowEntryPtr(e0));
 
@@ -1415,7 +1919,7 @@ FlowManager::UpdateEndpointFloodGroup(const opflex::modb::URI& fgrpURI,
         // go to the learning table on an unknown unicast
         // destination in flood mode
         FlowEntry *unicastLearn = new FlowEntry();
-        SetMatchFd(unicastLearn, 5, fgrpId, false, DST_TABLE_ID);
+        SetMatchFd(unicastLearn, 5, fgrpId, false, BRIDGE_TABLE_ID);
         SetActionGotoLearn(unicastLearn);
         grpDst.push_back(FlowEntryPtr(unicastLearn));
 
@@ -1425,9 +1929,10 @@ FlowManager::UpdateEndpointFloodGroup(const opflex::modb::URI& fgrpURI,
         SetMatchFd(fdContr, 5, fgrpId, false, LEARN_TABLE_ID,
                    NULL, GetProactiveLearnEntryCookie());
         SetActionController(fdContr);
-        WriteFlow(fgrpStrId, LEARN_TABLE_ID, fdContr);
+        learnDst.push_back(FlowEntryPtr(fdContr));
     }
-    WriteFlow(fgrpStrId, DST_TABLE_ID, grpDst);
+    WriteFlow(fgrpStrId, BRIDGE_TABLE_ID, grpDst);
+    WriteFlow(fgrpStrId, LEARN_TABLE_ID, learnDst);
 }
 
 void FlowManager::RemoveEndpointFromFloodGroup(const std::string& epUUID) {
@@ -1447,7 +1952,7 @@ void FlowManager::RemoveEndpointFromFloodGroup(const std::string& epUUID) {
         GroupEdit::Entry e1 =
                 CreateGroupMod(type, getPromId(fgrpId), epMap, true);
         if (epMap.empty()) {
-            WriteFlow(fgrpURI.toString(), DST_TABLE_ID, NULL);
+            WriteFlow(fgrpURI.toString(), BRIDGE_TABLE_ID, NULL);
             WriteFlow(fgrpURI.toString(), LEARN_TABLE_ID, NULL);
             floodGroupMap.erase(fgrpURI);
         }
@@ -1477,8 +1982,8 @@ void FlowManager::HandleContractUpdate(const opflex::modb::URI& contractURI) {
     typedef unordered_map<uint32_t, uint32_t> IdMap;
     IdMap provIds;
     IdMap consIds;
-    getEpgVnidAndRdId(provURIs, provIds);
-    getEpgVnidAndRdId(consURIs, consIds);
+    getGroupVnidAndRdId(provURIs, provIds);
+    getGroupVnidAndRdId(consURIs, consIds);
 
     PolicyManager::rule_list_t rules;
     polMgr.getContractRules(contractURI, rules);
@@ -1638,7 +2143,7 @@ void FlowManager::AddEntryForClassifier(L24Classifier *clsfr, bool allow,
                 FlowEntry *e0 = new FlowEntry();
                 e0->entry->cookie = ckbe;
 
-                SetPolicyMatchEpgs(e0, priority, svnid, dvnid);
+                SetPolicyMatchGroup(e0, priority, svnid, dvnid);
                 SetEntryProtocol(e0, clsfr);
                 if (tcpFlags != TcpFlagsEnumT::CONST_UNSPECIFIED)
                     SetEntryTcpFlags(e0, flagMask);
@@ -1662,7 +2167,7 @@ void FlowManager::AddEntryForClassifier(L24Classifier *clsfr, bool allow,
     if (reflexive && allow) {    /* add the flows for reverse direction */
         FlowEntry *e1 = new FlowEntry();
         e1->entry->cookie = ckbe;
-        SetPolicyMatchEpgs(e1, priority, dvnid, svnid);
+        SetPolicyMatchGroup(e1, priority, dvnid, svnid);
         SetEntryProtocol(e1, clsfr);
         match_set_conn_state_masked(&e1->entry->match, 0x0, 0x80);
         SetPolicyActionConntrack(e1, ctZone, NX_CT_F_RECIRC, false);
@@ -1670,7 +2175,7 @@ void FlowManager::AddEntryForClassifier(L24Classifier *clsfr, bool allow,
 
         FlowEntry *e2 = new FlowEntry();
         e2->entry->cookie = ckbe;
-        SetPolicyMatchEpgs(e2, priority, dvnid, svnid);
+        SetPolicyMatchGroup(e2, priority, dvnid, svnid);
         SetEntryProtocol(e2, clsfr);
         match_set_conn_state_masked(&e2->entry->match, 0x82, 0x83);
         SetPolicyActionAllow(e2);
@@ -1703,15 +2208,28 @@ void FlowManager::HandlePortStatusUpdate(const string& portName,
         BOOST_FOREACH (const URI& epg, epgURIs) {
             HandleEndpointGroupDomainUpdate(epg);
         }
+        PolicyManager::uri_set_t rdURIs;
+        agent.getPolicyManager().getRoutingDomains(rdURIs);
+        BOOST_FOREACH (const URI& rd, rdURIs) {
+            HandleRoutingDomainUpdate(rd);
+        }
         /* Directly update the group-table */
         UpdateGroupTable();
     } else {
         unordered_set<string> epUUIDs;
         agent.getEndpointManager().getEndpointsByIface(portName, epUUIDs);
+        agent.getEndpointManager().getEndpointsByIpmNextHopIf(portName,
+                                                              epUUIDs);
         BOOST_FOREACH (const string& ep, epUUIDs) {
             HandleEndpointUpdate(ep);
         }
     }
+}
+
+void FlowManager::DiffTableState(int tableId, const FlowEntryList& el,
+                                 /* out */ FlowEdit& diffs) {
+    const TableState& tab = flowTables[tableId];
+    tab.DiffSnapshot(el, diffs);
 }
 
 bool
@@ -1767,15 +2285,22 @@ FlowManager::WriteGroupMod(const GroupEdit::Entry& e) {
     return success;
 }
 
-void FlowManager::getEpgVnidAndRdId(const unordered_set<URI>& egURIs,
-    /* out */unordered_map<uint32_t, uint32_t>& egids) {
+void FlowManager::getGroupVnidAndRdId(const unordered_set<URI>& uris,
+    /* out */unordered_map<uint32_t, uint32_t>& ids) {
     PolicyManager& pm = agent.getPolicyManager();
-    BOOST_FOREACH(const URI& u, egURIs) {
+    BOOST_FOREACH(const URI& u, uris) {
         optional<uint32_t> vnid = pm.getVnidForGroup(u);
+        optional<shared_ptr<RoutingDomain> > rd;
         if (vnid) {
-            optional<shared_ptr<RoutingDomain> > rd = pm.getRDForGroup(u);
-            egids[vnid.get()] =
-                rd ? GetId(RoutingDomain::CLASS_ID, rd.get()->getURI()) : 0;
+            rd = pm.getRDForGroup(u);
+        } else {
+            rd = pm.getRDForL3ExtNet(u);
+            if (rd) {
+                vnid = getExtNetVnid(u);
+            }
+        }
+        if (vnid && rd) {
+            ids[vnid.get()] = GetId(RoutingDomain::CLASS_ID, rd.get()->getURI());
         }
     }
 }
@@ -1812,6 +2337,7 @@ const char * FlowManager::GetIdNamespace(class_id_t cid) {
     case BridgeDomain::CLASS_ID:    nmspc = ID_NMSPC_BD; break;
     case FloodDomain::CLASS_ID:     nmspc = ID_NMSPC_FD; break;
     case Contract::CLASS_ID:        nmspc = ID_NMSPC_CON; break;
+    case L3ExternalNetwork::CLASS_ID: nmspc = ID_NMSPC_EXTNET; break;
     default:
         assert(false);
     }
@@ -1820,6 +2346,12 @@ const char * FlowManager::GetIdNamespace(class_id_t cid) {
 
 uint32_t FlowManager::GetId(class_id_t cid, const URI& uri) {
     return idGen.getId(GetIdNamespace(cid), uri);
+}
+
+uint32_t FlowManager::getExtNetVnid(const opflex::modb::URI& uri) {
+    // External networks are assigned private VNIDs that have bit 31 (MSB)
+    // set to 1. This is fine because legal VNIDs are 24-bits or less.
+    return (GetId(L3ExternalNetwork::CLASS_ID, uri) | (1 << 31));
 }
 
 void FlowManager::updateMulticastList(const optional<string>& mcastIp,
@@ -2029,6 +2561,8 @@ void FlowManager::FlowSyncer::ReconcileFlows() {
     FlowEdit diffs[FlowManager::NUM_FLOW_TABLES];
     for (int i = 0; i < FlowManager::NUM_FLOW_TABLES; ++i) {
         flowManager.flowTables[i].DiffSnapshot(recvFlows[i], diffs[i]);
+        LOG(DEBUG) << "Table=" << i << ", snapshot has "
+                   << diffs[i].edits.size() << " diff(s)" << diffs[i];
     }
 
     for (int i = 0; i < FlowManager::NUM_FLOW_TABLES; ++i) {

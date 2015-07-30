@@ -30,6 +30,29 @@ std::ostream & operator<<(std::ostream &os, const Endpoint& ep) {
         os << ip;
     }
     os << "]";
+    if (ep.getIPAddressMappings().size() > 0) {
+        os << ",ipAddressMappings=[";
+
+        first = true;
+        BOOST_FOREACH(const Endpoint::IPAddressMapping& ipm,
+                      ep.getIPAddressMappings()) {
+            if (!ipm.getMappedIP()) continue;
+            if (first) first = false;
+            else os << ",";
+            os << ipm.getMappedIP().get();
+            if (ipm.getFloatingIP())
+                os << "->" << ipm.getFloatingIP().get();
+
+            if (ipm.getNextHopIf()) {
+                os << " (nextHop=" << ipm.getNextHopIf().get();
+                if (ipm.getNextHopMAC())
+                    os << "," << ipm.getNextHopMAC().get();
+                os << ")";
+            }
+
+        }
+        os << "]";
+    }
 
     const boost::optional<opflex::modb::URI>& u = ep.getEgURI();
     if (u)
@@ -46,6 +69,26 @@ std::ostream & operator<<(std::ostream &os, const Endpoint& ep) {
         os << ",dhcpv6";
 
     return os;
+}
+
+size_t hash_value(Endpoint::IPAddressMapping const& ip) {
+    size_t v = 0;
+    boost::hash_combine(v, ip.getUUID());
+    return v;
+}
+
+void Endpoint::addIPAddressMapping(const IPAddressMapping& ipAddressMapping) {
+    ipAddressMappings.insert(ipAddressMapping);
+}
+
+bool operator==(const Endpoint::IPAddressMapping& lhs,
+                const Endpoint::IPAddressMapping& rhs) {
+    return lhs.getUUID() == rhs.getUUID();
+}
+
+bool operator!=(const Endpoint::IPAddressMapping& lhs,
+                const Endpoint::IPAddressMapping& rhs) {
+    return !(lhs==rhs);
 }
 
 } /* namespace ovsagent */

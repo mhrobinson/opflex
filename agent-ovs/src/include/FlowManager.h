@@ -303,16 +303,17 @@ public:
                           bool fromDesc);
 
     /**
-     * Get the VNID and routing-domain ID for the specified endpoint groups.
+     * Get the VNID and routing-domain ID for the specified endpoint
+     * groups or L3 external networks
      *
-     * @param egURIs URIs of endpoint groups to search for
-     * @param egids Map of VNIDs-to-RoutingDomainID  of the endpoint
-     * groups which have a VNID. Routing-domain ID is set to 0 if the group
-     * is not part of a routing-domain
+     * @param uris URIs of endpoint groups to search for
+     * @param ids Map of VNIDs-to-RoutingDomainID of the groups which
+     * have a VNID. Routing-domain ID is set to 0 if the group is not
+     * part of a routing-domain
      */
-    void getEpgVnidAndRdId(
-        const boost::unordered_set<opflex::modb::URI>& egURIs,
-        /* out */boost::unordered_map<uint32_t, uint32_t>& egids);
+    void getGroupVnidAndRdId(
+        const boost::unordered_set<opflex::modb::URI>& uris,
+        /* out */boost::unordered_map<uint32_t, uint32_t>& ids);
 
     /**
      * Get or generate a unique ID for a given object for use with flows.
@@ -392,10 +393,73 @@ public:
     void QueueFlowTask(const WorkItem& w);
 
     /**
+     * Compare the state of a give table against the provided
+     * snapshot.
+     *
+     * @param tableId the table to compare against
+     * @param el the list of flows to compare against
+     * @param diffs returns the differences between the entries
+     */
+    void DiffTableState(int tableId, const FlowEntryList& el,
+                        /* out */ FlowEdit& diffs);
+
+    /**
      * Indices of tables managed by the flow-manager.
      */
-    enum { SEC_TABLE_ID, SRC_TABLE_ID, DST_TABLE_ID, LEARN_TABLE_ID,
-           POL_TABLE_ID, NUM_FLOW_TABLES };
+    enum {
+        /**
+         * Handles port security/ingress policy
+         */
+        SEC_TABLE_ID,
+        /**
+         * Maps source addresses to endpoint groups and sets this
+         * mapping into registers for use by later tables
+         */
+        SRC_TABLE_ID,
+        /**
+         * For flows that can be forwarded by bridging, maps the
+         * destination L2 address to an endpoint group and next hop
+         * interface and sets this mapping into registers for use by
+         * later tables.  Also handles replies to protocols handled by
+         * the agent or switch, such as ARP and NDP.
+         */
+        BRIDGE_TABLE_ID,
+        /**
+         * For flows that require routing, maps the destination L3
+         * address to an endpoint group or external network and next
+         * hop action and sets this information into registers for use
+         * by later tables.
+         */
+        ROUTE_TABLE_ID,
+        /**
+         * For flows destined for a NAT IP address, determine the
+         * source external network for the mapped IP address and set
+         * this in the source registers to allow applying policy to
+         * NATed flows.
+         */
+        NAT_IN_TABLE_ID,
+        /**
+         * If the bridge domain is configured to flood packets (such
+         * as is required to enable transparent layer 2 services),
+         * this table handles the MAC learning using a simple reactive
+         * model.
+         */
+        LEARN_TABLE_ID,
+        /**
+         * Allow policy for the flow based on the source and
+         * destination groups and the contracts that are configured.
+         */
+        POL_TABLE_ID,
+        /**
+         * Apply a destination action based on the action set in the
+         * metadata field.
+         */
+        OUT_TABLE_ID,
+        /**
+         * The total number of flow tables
+         */
+        NUM_FLOW_TABLES
+    };
 
 private:
     /**
@@ -412,6 +476,13 @@ private:
      * @param egURI URI of the changed endpoint group
      */
     void HandleEndpointGroupDomainUpdate(const opflex::modb::URI& egURI);
+
+    /**
+     * Update flows related to the given routing domain
+     *
+     * @param rdURI URI of the changed routing domain
+     */
+    void HandleRoutingDomainUpdate(const opflex::modb::URI& rdURI);
 
     /**
      * Handle changes to a forwarding domain; only deals with
@@ -456,10 +527,11 @@ private:
     void HandlePortStatusUpdate(const std::string& portName, uint32_t portNo);
 
     bool GetGroupForwardingInfo(const opflex::modb::URI& egUri, uint32_t& vnid,
-            boost::optional<opflex::modb::URI>& rdURI, uint32_t& rdId, uint32_t& bdId,
+            boost::optional<opflex::modb::URI>& rdURI, uint32_t& rdId, 
+            boost::optional<opflex::modb::URI>& bdURI, uint32_t& bdId,
             boost::optional<opflex::modb::URI>& fdURI, uint32_t& fdId);
     void UpdateGroupSubnets(const opflex::modb::URI& egUri,
-            uint32_t routingDomainId);
+                            uint32_t bdId, uint32_t rdId);
     bool WriteFlow(const std::string& objId, int tableId,
             FlowEntryList& el);
     bool WriteFlow(const std::string& objId, int tableId, FlowEntry *e);
@@ -575,6 +647,8 @@ private:
     IdGenerator idGen;
 
     bool isSyncing;
+
+    uint32_t getExtNetVnid(const opflex::modb::URI& uri);
 
     /**
      * Class to reconcile flow/group table state with cached memory state

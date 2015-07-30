@@ -22,6 +22,9 @@ SUBDIRS += ofcore
 SUBDIRS += cwrapper
 SUBDIRS += .
 
+EXTRA_DIST =
+EXTRA_DIST += debian
+
 modb_includedir = $(includedir)/opflex/modb
 modb_include_HEADERS = \
 	include/opflex/modb/ClassInfo.h \
@@ -43,6 +46,7 @@ core_includedir = $(includedir)/opflex/ofcore
 core_include_HEADERS = \
 	include/opflex/ofcore/OFFramework.h \
 	include/opflex/ofcore/PeerStatusListener.h \
+	include/opflex/ofcore/InspectorClient.h \
 	include/opflex/ofcore/OFConstants.h 
 test_includedir = $(includedir)/opflex/test
 test_include_HEADERS = \
@@ -105,7 +109,7 @@ clean-doc:
 clean-doc-internal:
 	rm -rf doc/html-internal
 clean-local: clean-doc clean-doc-internal
-	rm -f *.rpm
+	rm -f *.rpm *.deb
 
 CWD=`pwd`
 RPMFLAGS=--define "_topdir ${CWD}/rpm"
@@ -119,3 +123,23 @@ rpm: dist rpm/${PACKAGE}.spec
 	cp rpm/RPMS/${ARCH}/*.rpm .
 	cp rpm/SRPMS/*.rpm .
 	rm -rf ${RPMDIRS}
+srpm: dist rpm/${PACKAGE}.spec
+	mkdir -p ${RPMDIRS}
+	cp ${SOURCE_FILE} rpm/SOURCES/
+	rpmbuild ${RPMFLAGS} -bs rpm/${PACKAGE}.spec
+	cp rpm/SRPMS/*.rpm .
+	rm -rf ${RPMDIRS}
+
+# Set env var DEB_BUILD_OPTIONS="parallel=<#cores>" to speed up package builds
+DEB_PKG_DIR=deb
+deb: dist
+	- rm -rf  $(DEB_PKG_DIR)
+	mkdir -p $(DEB_PKG_DIR)
+	cp $(SOURCE_FILE) $(DEB_PKG_DIR)/
+	tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)
+	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
+	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
+		VERSION_WITH_BUILD=$(VERSION)-$(SDK_BVERSION) \
+		dpkg-buildpackage -d -us -uc -rfakeroot -b
+	cp $(DEB_PKG_DIR)/*.deb .
+	rm -rf $(DEB_PKG_DIR)

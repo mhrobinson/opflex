@@ -19,7 +19,8 @@ OVS_ADDL_CFLAGS = \
 
 AM_CPPFLAGS = $(BOOST_CPPFLAGS) \
 	-I$(top_srcdir)/src/include \
-	-DBOOST_LOG_DYN_LINK
+	-DLOCALSTATEDIR='"$(localstatedir)"'
+
 AM_LDFLAGS = $(BOOST_LDFLAGS)
 
 noinst_LTLIBRARIES = libagent_ovs.la
@@ -32,8 +33,6 @@ libagent_ovs_la_CXXFLAGS = \
 libagent_ovs_la_LIBADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
-	$(BOOST_LOG_LIB) \
-	$(BOOST_LOG_SETUP_LIB) \
 	$(BOOST_SYSTEM_LIB) \
 	$(BOOST_FILESYSTEM_LIB) \
 	$(BOOST_THREAD_LIB) \
@@ -96,6 +95,7 @@ libagent_ovs_la_SOURCES = \
 	src/PortMapper.cpp \
 	src/StatsManager.cpp \
 	src/cmd.cpp \
+	src/logging.cpp \
 	src/Agent.cpp \
 	src/WorkQueue.cpp \
 	src/IdGenerator.cpp \
@@ -105,12 +105,20 @@ libagent_ovs_la_SOURCES = \
 	src/JsonCmdExecutor.cpp \
 	src/AdvertManager.cpp
 
-bin_PROGRAMS=agent_ovs
+bin_PROGRAMS=agent_ovs gbp_inspect
 agent_ovs_CXXFLAGS = -DSYSCONFDIR='"$(sysconfdir)"' $(OVS_ADDL_CFLAGS)
 agent_ovs_SOURCES = \
 	src/main.cpp
 agent_ovs_LDADD = \
 	libagent_ovs.la \
+	$(BOOST_PROGRAM_OPTIONS_LIB)
+
+gbp_inspect_CXXFLAGS = -DSYSCONFDIR='"$(sysconfdir)"'
+gbp_inspect_SOURCES = \
+	src/gbp_inspect.cpp
+gbp_inspect_LDADD = \
+	libagent_ovs.la \
+	$(BOOST_IOSTREAMS_LIB) \
 	$(BOOST_PROGRAM_OPTIONS_LIB)
 
 TESTS = agent_test
@@ -162,9 +170,11 @@ agentconf_DATA = opflex-agent-ovs.conf
 
 flowidcachedir=${localstatedir}/lib/opflex-agent-ovs/ids
 defwatchdir=${localstatedir}/lib/opflex-agent-ovs/endpoints
+inspectsock=${localstatedir}/run/opflex-agent-ovs-inspect.sock
 opflex-agent-ovs.conf: $(top_srcdir)/opflex-agent-ovs.conf.in
 	sed -e "s|DEFAULT_FS_ENDPOINT_DIR|${defwatchdir}|" \
 	    -e "s|DEFAULT_FLOWID_CACHE_DIR|${flowidcachedir}|" \
+	    -e "s|DEFAULT_INSPECTOR_SOCKET|${inspectsock}|" \
 	$(top_srcdir)/opflex-agent-ovs.conf.in > opflex-agent-ovs.conf
 
 if HAVE_DOXYGEN
@@ -198,7 +208,7 @@ doc: doc/html
 clean-doc:
 	rm -rf doc/html doc/latex
 clean-local: clean-doc
-	rm -f *.rpm
+	rm -f *.rpm *.deb
 
 EXTRA_DIST=rpm/agent-ovs.service rpm/90-agent-ovs-sysctl.conf opflex-agent-ovs.conf.in
 
@@ -214,3 +224,25 @@ rpm: dist rpm/${PACKAGE}.spec
 	cp rpm/RPMS/${ARCH}/*.rpm .
 	cp rpm/SRPMS/*.rpm .
 	rm -rf ${RPMDIRS}
+srpm: dist rpm/${PACKAGE}.spec
+	mkdir -p ${RPMDIRS}
+	cp ${SOURCE_FILE} rpm/SOURCES/
+	rpmbuild ${RPMFLAGS} -bs rpm/${PACKAGE}.spec
+	cp rpm/SRPMS/*.rpm .
+	rm -rf ${RPMDIRS}
+
+EXTRA_DIST += debian
+
+# Set env var DEB_BUILD_OPTIONS="parallel=<#cores>" to speed up package builds
+DEB_PKG_DIR=deb
+deb: dist
+	- rm -rf  $(DEB_PKG_DIR)
+	mkdir -p $(DEB_PKG_DIR)
+	cp $(SOURCE_FILE) $(DEB_PKG_DIR)/
+	tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)
+	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
+	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
+		VERSION_WITH_BUILD=$(VERSION)-$(BVERSION) \
+		dpkg-buildpackage -d -us -uc -rfakeroot -b
+	cp $(DEB_PKG_DIR)/*.deb .
+	rm -rf $(DEB_PKG_DIR)

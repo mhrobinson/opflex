@@ -29,7 +29,6 @@ AM_CPPFLAGS += -I$(top_builddir)
 AM_CPPFLAGS += -I$(srcdir)/include
 AM_CPPFLAGS += -I$(top_srcdir)/include
 AM_CPPFLAGS += -I$(top_srcdir)/logging/include
-AM_CPPFLAGS += -I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp
 AM_CPPFLAGS += $(OPENSSL_CFLAGS) -DYAJR_HAS_OPENSSL
 
 libcommstrace_la_SOURCES  =
@@ -41,6 +40,7 @@ libcomms_la_CPPFLAGS  = $(AM_CPPFLAGS)
 
 libcomms_la_CXXFLAGS  = $(AM_CXXFLAGS)
 libcomms_la_CXXFLAGS += $(UV_CFLAGS)
+libcomms_la_CXXFLAGS += $(RAPIDJSON_CFLAGS)
 
 libcomms_la_CPPFLAGS += -DBOOST_EXCEPTION_DISABLE
 libcomms_la_CXXFLAGS += -fno-exceptions
@@ -63,6 +63,8 @@ libcomms_la_SOURCES += transport/ZeroCopyOpenSSL.cpp
 libcomms_la_SOURCES += rpc.cpp
 libcomms_la_SOURCES += peer.cpp
 libcomms_la_SOURCES += ActivePeer.cpp
+libcomms_la_SOURCES += ActiveTcpPeer.cpp
+libcomms_la_SOURCES += ActiveUnixPeer.cpp
 libcomms_la_SOURCES += CommunicationPeer.cpp
 libcomms_la_SOURCES += ListeningPeer.cpp
 libcomms_la_SOURCES += PassivePeer.cpp
@@ -73,12 +75,12 @@ libcomms_la_SOURCES += rpc/handlers/request/echo.cpp
 libcomms_la_SOURCES += rpc/handlers/request/unknown.cpp
 
 # inbound ERROR RESPONSEs
-libcomms_la_SOURCES += rpc/handlers/response/error/echo.cpp
-libcomms_la_SOURCES += rpc/handlers/response/error/unknown.cpp
+libcomms_la_SOURCES += rpc/handlers/error_response/echo.cpp
+libcomms_la_SOURCES += rpc/handlers/error_response/unknown.cpp
 
 # inbound SUCCESS RESPONSEs
-libcomms_la_SOURCES += rpc/handlers/response/result/echo.cpp
-libcomms_la_SOURCES += rpc/handlers/response/result/unknown.cpp
+libcomms_la_SOURCES += rpc/handlers/result_response/echo.cpp
+libcomms_la_SOURCES += rpc/handlers/result_response/unknown.cpp
 
 # message factory
 libcomms_la_SOURCES     += rpc/message/factory/inboundmessage.cpp
@@ -102,7 +104,11 @@ endif
 
 TESTS                =
 TESTS               += test/stable_tests.sh
-noinst_PROGRAMS      = comms_test
+if MAKE_ALL_TESTS
+    noinst_PROGRAMS  = comms_test
+else
+    check_PROGRAMS   = comms_test
+endif
 dist_noinst_SCRIPTS  =
 dist_noinst_SCRIPTS += test/stable_tests.sh
 dist_noinst_SCRIPTS += test/server.pem
@@ -111,12 +117,46 @@ dist_noinst_SCRIPTS += test/ca.pem
 comms_test_SOURCES  =
 comms_test_SOURCES += test/main.cpp
 comms_test_SOURCES += test/comms_test.cpp
-comms_test_SOURCES += test/handlers.cpp
+
+comms_test_SOURCES += test/handlers/error_response/custom.cpp
+comms_test_SOURCES += test/handlers/error_response/endpoint_declare.cpp
+comms_test_SOURCES += test/handlers/error_response/endpoint_resolve.cpp
+comms_test_SOURCES += test/handlers/error_response/endpoint_undeclare.cpp
+comms_test_SOURCES += test/handlers/error_response/endpoint_unresolve.cpp
+comms_test_SOURCES += test/handlers/error_response/endpoint_update.cpp
+comms_test_SOURCES += test/handlers/error_response/policy_resolve.cpp
+comms_test_SOURCES += test/handlers/error_response/policy_unresolve.cpp
+comms_test_SOURCES += test/handlers/error_response/policy_update.cpp
+comms_test_SOURCES += test/handlers/error_response/send_identity.cpp
+comms_test_SOURCES += test/handlers/error_response/state_report.cpp
+comms_test_SOURCES += test/handlers/request/custom.cpp
+comms_test_SOURCES += test/handlers/request/endpoint_declare.cpp
+comms_test_SOURCES += test/handlers/request/endpoint_resolve.cpp
+comms_test_SOURCES += test/handlers/request/endpoint_undeclare.cpp
+comms_test_SOURCES += test/handlers/request/endpoint_unresolve.cpp
+comms_test_SOURCES += test/handlers/request/endpoint_update.cpp
+comms_test_SOURCES += test/handlers/request/policy_resolve.cpp
+comms_test_SOURCES += test/handlers/request/policy_unresolve.cpp
+comms_test_SOURCES += test/handlers/request/policy_update.cpp
+comms_test_SOURCES += test/handlers/request/send_identity.cpp
+comms_test_SOURCES += test/handlers/request/state_report.cpp
+comms_test_SOURCES += test/handlers/result_response/custom.cpp
+comms_test_SOURCES += test/handlers/result_response/endpoint_declare.cpp
+comms_test_SOURCES += test/handlers/result_response/endpoint_resolve.cpp
+comms_test_SOURCES += test/handlers/result_response/endpoint_undeclare.cpp
+comms_test_SOURCES += test/handlers/result_response/endpoint_unresolve.cpp
+comms_test_SOURCES += test/handlers/result_response/endpoint_update.cpp
+comms_test_SOURCES += test/handlers/result_response/policy_resolve.cpp
+comms_test_SOURCES += test/handlers/result_response/policy_unresolve.cpp
+comms_test_SOURCES += test/handlers/result_response/policy_update.cpp
+comms_test_SOURCES += test/handlers/result_response/send_identity.cpp
+comms_test_SOURCES += test/handlers/result_response/state_report.cpp
 
 comms_test_CPPFLAGS  = $(AM_CPPFLAGS)
 comms_test_CPPFLAGS += -DBOOST_TEST_DYN_LINK
 comms_test_CPPFLAGS += -DSRCDIR="\"$(abs_srcdir)\""
 comms_test_CPPFLAGS += $(UV_CFLAGS)
+comms_test_CPPFLAGS += $(RAPIDJSON_CFLAGS)
 comms_test_CPPFLAGS += -DYAJR_HAS_OPENSSL
 comms_test_CPPFLAGS += $(OPENSSL_CFLAGS)
 

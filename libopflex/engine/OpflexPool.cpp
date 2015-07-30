@@ -48,6 +48,16 @@ OpflexPool::~OpflexPool() {
     uv_mutex_destroy(&conn_mutex);
 }
 
+boost::optional<std::string> OpflexPool::getLocation() {
+    util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
+    return location;
+}
+
+void OpflexPool::setLocation(const std::string& location) {
+    util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
+    this->location = location;
+}
+
 void OpflexPool::enableSSL(const std::string& caStorePath,
                            bool verifyPeers) {
 #ifndef SIMPLE_RPC
@@ -143,6 +153,14 @@ void OpflexPool::setOpflexIdentity(const std::string& name,
                                    const std::string& domain) {
     this->name = name;
     this->domain = domain;
+}
+
+void OpflexPool::setOpflexIdentity(const std::string& name,
+                                   const std::string& domain,
+                                   const std::string& location) {
+    this->name = name;
+    this->domain = domain;
+    this->location = location;
 }
 
 void
@@ -357,38 +375,39 @@ void OpflexPool::messagesReady() {
     uv_async_send(&writeq_async);
 }
 
-void OpflexPool::sendToRole(OpflexMessage* message,
-                            OFConstants::OpflexRole role,
-                            bool sync) {
+size_t OpflexPool::sendToRole(OpflexMessage* message,
+                           OFConstants::OpflexRole role,
+                           bool sync) {
     std::auto_ptr<OpflexMessage> messagep(message);
-    if (!active) return;
+    if (!active) return 0;
     std::vector<OpflexClientConnection*> conns;
-    {
-        util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
-        role_map_t::iterator it = roles.find(role);
-        if (it == roles.end())
-            return;
+
+    util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
+    role_map_t::iterator it = roles.find(role);
+    if (it == roles.end())
+        return 0;
         
-        size_t i = 0;
-        OpflexMessage* m_copy = NULL;
-        std::vector<OpflexClientConnection*> ready;
-        BOOST_FOREACH(OpflexClientConnection* conn, it->second.conns) {
-            if (!conn->isReady()) continue;
-            ready.push_back(conn);
+    size_t i = 0;
+    OpflexMessage* m_copy = NULL;
+    std::vector<OpflexClientConnection*> ready;
+    BOOST_FOREACH(OpflexClientConnection* conn, it->second.conns) {
+        if (!conn->isReady()) continue;
+        ready.push_back(conn);
+    }
+    BOOST_FOREACH(OpflexClientConnection* conn, ready) {
+        if (i < (ready.size() - 1)) {
+            m_copy = message->clone();
+        } else {
+            m_copy = message;
+            messagep.release();
         }
-        BOOST_FOREACH(OpflexClientConnection* conn, ready) {
-            if (i < (ready.size() - 1)) {
-                m_copy = message->clone();
-            } else {
-                m_copy = message;
-                messagep.release();
-            }
-            conn->sendMessage(m_copy, sync);
-            i += 1;
-        }
+        conn->sendMessage(m_copy, sync);
+        i += 1;
     }
     // all allocated buffers should have been dispatched to
     // connections
+
+    return i;
 }
 
 void OpflexPool::validatePeerSet(const peer_name_set_t& peers) {

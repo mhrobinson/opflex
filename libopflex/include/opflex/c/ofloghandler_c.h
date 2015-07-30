@@ -104,7 +104,6 @@ typedef void (*loghandler_p)(const char* file, int line,
 #ifdef __cplusplus
 extern "C" {
 #endif
-
     /**
      * Register a new log handler.  
      * 

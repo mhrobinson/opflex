@@ -17,14 +17,12 @@ AM_CPPFLAGS = $(BOOST_CPPFLAGS) \
 	-I$(top_srcdir)/modb/include \
 	-I$(top_srcdir)/logging/include \
 	-I$(top_srcdir)/util/include \
-	-I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp \
 	-I$(top_srcdir)/comms/include
-
-AM_CPPFLAGS += -I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp
 
 noinst_LTLIBRARIES = libengine.la
 
-libengine_la_CXXFLAGS = $(UV_CFLAGS) $(OPENSSL_CFLAGS)
+libengine_la_CXXFLAGS = $(UV_CFLAGS) $(OPENSSL_CFLAGS) $(RAPIDJSON_CFLAGS)
+
 libengine_la_LIBADD = $(UV_LIBS) $(OPENSSL_LIBS)
 libengine_la_SOURCES = \
 	include/opflex/engine/internal/MOSerializer.h \
@@ -40,6 +38,11 @@ libengine_la_SOURCES = \
 	include/opflex/engine/internal/ProcessorMessage.h \
 	include/opflex/engine/internal/MockOpflexServerImpl.h \
 	include/opflex/engine/internal/MockServerHandler.h \
+	include/opflex/engine/internal/InspectorServerHandler.h \
+	include/opflex/engine/internal/InspectorClientHandler.h \
+	include/opflex/engine/internal/InspectorClientConn.h \
+	include/opflex/engine/Inspector.h \
+	include/opflex/engine/InspectorClientImpl.h \
 	include/opflex/engine/Processor.h \
 	AbstractObjectListener.cpp \
 	MOSerializer.cpp \
@@ -53,4 +56,9 @@ libengine_la_SOURCES = \
 	OpflexListener.cpp \
 	OpflexPool.cpp \
 	MockOpflexServer.cpp \
-	MockServerHandler.cpp
+	MockServerHandler.cpp \
+	Inspector.cpp \
+	InspectorServerHandler.cpp \
+	InspectorClientImpl.cpp \
+	InspectorClientConn.cpp \
+	InspectorClientHandler.cpp

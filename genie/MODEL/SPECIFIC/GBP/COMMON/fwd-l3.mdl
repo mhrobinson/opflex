@@ -33,21 +33,36 @@ module[gbp]
             }
         }
 
+        # References to subnets that are internal to this routing domain.
+        dependency[intSubnets;
+                   cardinality=many;
+                   ]
+        {
+            to[class=gbp/Subnets;
+               cardinality=many;
+               ]
+        }
+
         # Set how IPv6 hosts should be configured (through DHCP or
         # statelessly)
         member[ipv6Autoconfig; type=gbp/Autoconfig]
     }
 
-    class[Subnet;
+    class[BaseSubnet;
           super=gbp/BehavioralGroup;
-          concrete]
+          abstract]
     {
         # The network address
         member[address; type=address/IP]
 
         # prefix length for the subnet
         member[prefixLen; type=scalar/UInt8]
+    }
 
+    class[Subnet;
+          super=gbp/BaseSubnet;
+          concrete]
+    {
         # the IP address to use for a virtual gateway router for the
         # subnet, if desired.  Can be either IPv4 or IPv6.
         member[virtualRouterIp; type=address/IP]
@@ -76,25 +91,9 @@ module[gbp]
     }
 
     class[Subnets;
-          super=gbp/L3BehavioralGroup;
+          super=gbp/BehavioralGroup;
           concrete]
     {
-        dependency[network;
-                   cardinality=single;
-                   ]
-        {
-            to[class=gbp/BridgeDomain;
-               cardinality=many;
-               ]
-
-            to[class=gbp/FloodDomain;
-               cardinality=many;
-               ]
-
-            to[class=gbp/RoutingDomain;
-               cardinality=many;
-               ]
-        }
         contained
         {
             parent[class=policy/Space]

@@ -18,7 +18,6 @@ AM_CPPFLAGS = $(BOOST_CPPFLAGS) -DBOOST_TEST_DYN_LINK \
 	-I$(top_srcdir)/modb/include \
 	-I$(top_srcdir)/modb/test \
 	-I$(top_srcdir)/comms/include \
-	-I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp \
 	-I$(top_srcdir)/util/include
 AM_LDFLAGS = $(BOOST_LDFLAGS)
 
@@ -28,7 +27,7 @@ engine_test_SOURCES = \
 	MOSerialize_test.cpp \
 	Processor_test.cpp \
 	OpflexPool_test.cpp
-engine_test_CXXFLAGS = $(UV_CFLAGS)
+engine_test_CXXFLAGS = $(UV_CFLAGS) $(RAPIDJSON_CFLAGS)
 engine_test_LDADD = \
 	../libengine.la \
 	../../util/libutil.la \
@@ -37,4 +36,8 @@ engine_test_LDADD = \
 	../../logging/liblogging.la \
 	$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
 
-noinst_PROGRAMS = $(TESTS)
+if MAKE_ALL_TESTS
+    noinst_PROGRAMS = $(TESTS)
+else
+    check_PROGRAMS = $(TESTS)
+endif

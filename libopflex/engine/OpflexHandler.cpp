@@ -58,7 +58,8 @@ void OpflexHandler::handleUnsupportedReq(const rapidjson::Value& id,
     sendErrorRes(id, "EUNSUPPORTED", "Unsupported request");
 }
 
-void OpflexHandler::handleError(const rapidjson::Value& payload,
+void OpflexHandler::handleError(uint64_t reqId,
+                                const rapidjson::Value& payload,
                                 const string& type) {
     string code;
     string message;
@@ -72,7 +73,8 @@ void OpflexHandler::handleError(const rapidjson::Value& payload,
         if (v.IsString())
             message = v.GetString();
     }
-    LOG(ERROR) << "Remote peer returned error with message (" << type
+    LOG(ERROR) << "Remote peer returned error with message ("
+               << reqId << "," << type
                << "): " << code << ": " << message;
 }
 
@@ -107,6 +109,7 @@ public:
         handler.String(code.c_str());
         handler.String("message");
         handler.String(message.c_str());
+        handler.EndObject();
         return true;
     }
 
@@ -140,7 +143,7 @@ namespace rpc {
     ->getHandler()->handle##name(getRemoteId(), getPayload())
 #define HANDLE_RES(name) \
     ((opflex::engine::internal::OpflexConnection*)getPeer()->getData())\
-    ->getHandler()->handle##name(getPayload())
+    ->getHandler()->handle##name(getLocalId().id_, getPayload())
 
 template<>
 void InbReq<&yajr::rpc::method::send_identity>::process() const {
@@ -270,6 +273,19 @@ void InbRes<&yajr::rpc::method::state_report>::process() const {
 template<>
 void InbErr<&yajr::rpc::method::state_report>::process() const {
     HANDLE_RES(StateReportErr);
+}
+
+template<>
+void InbReq<&yajr::rpc::method::custom>::process() const {
+    HANDLE_REQ(CustomReq);
+}
+template<>
+void InbRes<&yajr::rpc::method::custom>::process() const {
+    HANDLE_RES(CustomRes);
+}
+template<>
+void InbErr<&yajr::rpc::method::custom>::process() const {
+    HANDLE_RES(CustomErr);
 }
 
 } /* namespace rpc */

@@ -15,7 +15,6 @@ AM_CPPFLAGS = $(BOOST_CPPFLAGS) -DBOOST_TEST_DYN_LINK \
 	-I$(top_srcdir)/comms/include \
 	-I$(top_srcdir)/engine/include \
 	-I$(top_srcdir)/modb/include \
-	-I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp \
 	-I$(top_srcdir)/logging/include \
 	-I$(top_srcdir)/util/include \
 	-I$(top_srcdir)/modb/test
@@ -26,6 +25,7 @@ cwrapper_test_SOURCES = \
 	main.cpp \
 	cwrapper_test.cpp
 
+cwrapper_test_CXXFLAGS = $(UV_CFLAGS)
 cwrapper_test_LDADD = ../libcwrapper.la \
 	../../ofcore/libcore.la \
 	../../engine/libengine.la \
@@ -35,4 +35,8 @@ cwrapper_test_LDADD = ../libcwrapper.la \
 	../../logging/liblogging.la \
 	$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
 
-noinst_PROGRAMS = $(TESTS)
+if MAKE_ALL_TESTS
+    noinst_PROGRAMS = $(TESTS)
+else
+    check_PROGRAMS = $(TESTS)
+endif

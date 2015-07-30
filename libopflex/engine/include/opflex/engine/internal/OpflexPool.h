@@ -20,6 +20,7 @@
 #include <boost/unordered_map.hpp>
 #include <boost/unordered_set.hpp>
 #include <boost/noncopyable.hpp>
+#include <boost/optional.hpp>
 #include <uv.h>
 
 #include "opflex/engine/internal/OpflexHandler.h"
@@ -54,16 +55,31 @@ public:
     /**
      * Get the unique name for this component in the policy domain
      *
-     * @returns the string name
+     * @return the string name
      */
     const std::string& getName() { return name; }
 
     /**
      * Get the globally unique name for this policy domain
      *
-     * @returns the string domain name
+     * @return the string domain name
      */
     const std::string& getDomain() { return domain; }
+
+    /**
+     * Get a copy of the location string for this policy element, if
+     * it has been set
+     *
+     * @return the location string
+     */
+    boost::optional<std::string> getLocation();
+
+    /**
+     * Set the location string for this policy element
+     *
+     * @param location the location string
+     */
+    void setLocation(const std::string& location);
 
     /**
      * Set the opflex identity information for this pool
@@ -74,6 +90,18 @@ public:
      */
     void setOpflexIdentity(const std::string& name,
                            const std::string& domain);
+
+    /**
+     * Set the opflex identity information for this pool
+     *
+     * @param name the unique name for this opflex component within
+     * the policy domain
+     * @param domain the globally unique name for this policy domain
+     * @param location the location string for this policy element.
+     */
+    void setOpflexIdentity(const std::string& name,
+                           const std::string& domain,
+                           const std::string& location);
 
     /**
      * Start the pool
@@ -120,7 +148,7 @@ public:
      *
      * @param hostname the remote hostname
      * @param port the port on the remote host
-     * @returns the client connection, or NULL if there is no such
+     * @return the client connection, or NULL if there is no such
      * connection
      */
     OpflexClientConnection* getPeer(const std::string& hostname, int port);
@@ -135,9 +163,11 @@ public:
 
     /**
      * Set the roles for the specified connection
+     *
+     * @param conn the connection to change the roles for
+     * @param roles the new roles bitmask
      */
-    void setRoles(OpflexClientConnection* conn,
-                  uint8_t roles);
+    void setRoles(OpflexClientConnection* conn, uint8_t roles);
 
     /**
      * Get the primary connection for the given role.  This will be
@@ -157,10 +187,11 @@ public:
      * @param role the role to which the message should be sent
      * @param sync if true then this is being called from the libuv
      * thread
+     * @return the number of ready connections to which we sent the message
      */
-    void sendToRole(OpflexMessage* message, 
-                    ofcore::OFConstants::OpflexRole role,
-                    bool sync = false);
+    size_t sendToRole(OpflexMessage* message, 
+                      ofcore::OFConstants::OpflexRole role,
+                      bool sync = false);
 
     /**
      * Get the number of connections in a particular role
@@ -212,6 +243,8 @@ private:
     std::string name;
     /** globally unique opflex domain */
     std::string domain;
+    /** location string for this policy element */
+    boost::optional<std::string> location;
 
 #ifndef SIMPLE_RPC
     std::auto_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> clientCtx;

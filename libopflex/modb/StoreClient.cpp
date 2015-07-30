@@ -49,11 +49,13 @@ void StoreClient::queueNotification(class_id_t class_id, const URI& uri,
     // path.
     try {
         Region* r = store->getRegion(class_id);
-        std::pair<URI, prop_id_t> parent = r->getParent(class_id, uri);
-        queueNotification(store->prop_map.at(parent.second)->getId(), 
-                          parent.first, notifs);
-    } catch (std::out_of_range e) {
-        // no parent
+        std::pair<URI, prop_id_t> parent(URI::ROOT, 0);
+        if (r->getParent(class_id, uri, parent)) {
+            queueNotification(store->prop_map.at(parent.second)->getId(),
+                              parent.first, notifs);
+        }
+    } catch (const std::out_of_range&) {
+        // region not found
     }
     notifs[uri] = class_id;
 }
@@ -79,10 +81,26 @@ bool StoreClient::putIfModified(class_id_t class_id,
     return r->putIfModified(class_id, uri, oi);
 }
 
+bool StoreClient::isPresent(class_id_t class_id, const URI& uri) const {
+    Region* r = store->getRegion(class_id);
+    return r->isPresent(uri);
+}
+
 boost::shared_ptr<const ObjectInstance> StoreClient::get(class_id_t class_id,
                                                          const URI& uri) const {
     Region* r = store->getRegion(class_id);
     return r->get(uri);
+}
+
+bool StoreClient::get(class_id_t class_id, const URI& uri,
+                      /*out*/ boost::shared_ptr<const ObjectInstance>& oi) const {
+    Region *r;
+    try {
+        r = store->getRegion(class_id);
+    } catch (const std::out_of_range&) {
+        return false;
+    }
+    return r->get(uri, oi);
 }
 
 void StoreClient::removeChildren(class_id_t class_id, const URI& uri,
@@ -101,7 +119,7 @@ void StoreClient::removeChildren(class_id_t class_id, const URI& uri,
                 // unlink the parent/child
                 delChild(class_id, uri, prop_id, prop_class, *cit);
                 // remove the child object
-                remove(prop_class, *cit, true);
+                remove(prop_class, *cit, true, notifs);
                 if (notifs)
                     (*notifs)[*cit] = prop_class;
             }
@@ -119,14 +137,14 @@ bool StoreClient::remove(class_id_t class_id, const URI& uri,
 
     // remove the parent link
     try {
-        std::pair<URI, prop_id_t> parent = r->getParent(class_id, uri);
-        std::vector<std::pair<URI, prop_id_t> > parents;
-        std::vector<std::pair<URI, prop_id_t> >::iterator pit;
-        class_id_t parent_class = store->prop_map.at(parent.second)->getId();
-        delChild(parent_class, parent.first, parent.second,
-                 class_id, uri);
-    } catch (std::out_of_range e) {
-        // no parent link found
+        std::pair<URI, prop_id_t> parent(URI::ROOT, 0);
+        if (r->getParent(class_id, uri, parent)) {
+            class_id_t parent_class = store->prop_map.at(parent.second)->getId();
+            delChild(parent_class, parent.first, parent.second,
+                     class_id, uri);
+        }
+    } catch (const std::out_of_range&) {
+        // parent prop info not found
     }
 
     if (!recursive) return result;
@@ -188,6 +206,23 @@ StoreClient::getParent(class_id_t child_class,
                        const URI& child) {
     Region* r = store->getRegion(child_class);
     return r->getParent(child_class, child);
+}
+
+bool StoreClient::getParent(class_id_t child_class, const URI& child,
+                            /* out */ std::pair<URI, prop_id_t>& parent) {
+    Region *r;
+    try {
+        r = store->getRegion(child_class);
+    } catch(const std::out_of_range&) {
+        return false;
+    }
+    return r->getParent(child_class, child, parent);
+}
+
+void StoreClient::getObjectsForClass(class_id_t class_id,
+                                     /* out */ boost::unordered_set<URI>& output) {
+    Region* r = store->getRegion(class_id);
+    return r->getObjectsForClass(class_id, output);
 }
 
 } /* namespace mointernal */

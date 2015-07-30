@@ -11,11 +11,14 @@
 #  include <config.h>
 #endif
 
-
 #include <yajr/internal/comms.hpp>
 #include <yajr/transport/engine.hpp>
 
 #include <yajr/internal/walkAndDumpHandlesCb.hpp>
+
+#ifndef NDEBUG
+# include <unistd.h>
+#endif
 
 namespace yajr {
     namespace comms {
@@ -34,6 +37,9 @@ std::ostream& operator << (
         ::yajr::comms::internal::Peer const * p
     ) {
     os
+#ifndef NDEBUG
+        << getpid()
+#endif
         << "{"
         << reinterpret_cast<void const *>(p)
         << "}"
@@ -43,9 +49,9 @@ std::ostream& operator << (
         << "["
         << p->uvRefCnt_
         << "];handle@"
-        << reinterpret_cast<void const *>(&p->handle_)
+        << reinterpret_cast<void const *>(p->getHandle())
         << ";HD:"
-        << p->handle_.data
+        << p->getHandle()->data
         << "];timer@"
         << reinterpret_cast<void const *>(&p->keepAliveTimer_)
         << ";TD:"
@@ -61,8 +67,23 @@ std::ostream& operator << (
             << "->|->"
             << cP->pendingBytes_
             << "|"
-            << cP->handle_.write_queue_size
+            << cP->getPendingBytes()
             << "->"
+        ;
+    }
+    os
+        << " PIDs"
+    ;
+    for (std::vector<Peer::PidSequence>::iterator it = p->pidSeq_.begin()
+            ;
+        it != p->pidSeq_.end()
+            ;
+        ++it) {
+        os
+            << ":"
+            << it->count
+            << "x"
+            << it->pid
         ;
     }
 #endif
@@ -87,7 +108,10 @@ CommunicationPeer * Peer::get(uv_timer_t * h) {
     CommunicationPeer * peer = static_cast<CommunicationPeer *>(h->data);
 
     VLOG(7)
-        << "peer {"
+#ifndef NDEBUG
+        << getpid()
+#endif
+        << "{"
         << reinterpret_cast<void *>(peer)
         << "} is about to have its invariants checked"
     ;
@@ -101,7 +125,10 @@ ActivePeer * Peer::get(uv_connect_t * r) {
     ActivePeer * peer = Peer::get<ActivePeer>(r->handle);
 
     VLOG(7)
-        << "peer {"
+#ifndef NDEBUG
+        << getpid()
+#endif
+        << "{"
         << reinterpret_cast<void *>(peer)
         << "} is about to have its invariants checked"
     ;
@@ -110,11 +137,14 @@ ActivePeer * Peer::get(uv_connect_t * r) {
     return peer;
 }
 
-ActivePeer * Peer::get(uv_getaddrinfo_t * r) {
-    ActivePeer * peer = static_cast<ActivePeer *>(r->data);
+ActiveTcpPeer * Peer::get(uv_getaddrinfo_t * r) {
+    ActiveTcpPeer * peer = static_cast<ActiveTcpPeer *>(r->data);
 
     VLOG(7)
-        << "peer {"
+#ifndef NDEBUG
+        << getpid()
+#endif
+        << "{"
         << reinterpret_cast<void *>(peer)
         << "} is about to have its invariants checked"
     ;
@@ -131,8 +161,8 @@ bool Peer::__checkInvariants()
 {
     VLOG(7)
         << this
-        << " ALWAYS = true"
     ;
+    appendPID();
 #endif
     return true;
 }
@@ -212,38 +242,38 @@ Peer::~Peer() {
         << "}"
         << " flags="
         << std::hex
-        << handle_.flags
+        << getHandle()->flags
         << " UV_CLOSING "
-        << (handle_.flags & 0x00001)
+        << (getHandle()->flags & 0x00001)
         << " UV_CLOSED "
-        << (handle_.flags & 0x00002)
+        << (getHandle()->flags & 0x00002)
         << " UV_STREAM_READING "
-        << (handle_.flags & 0x00004)
+        << (getHandle()->flags & 0x00004)
         << " UV_STREAM_SHUTTING "
-        << (handle_.flags & 0x00008)
+        << (getHandle()->flags & 0x00008)
         << " UV_STREAM_SHUT "
-        << (handle_.flags & 0x00010)
+        << (getHandle()->flags & 0x00010)
         << " UV_STREAM_READABLE "
-        << (handle_.flags & 0x00020)
+        << (getHandle()->flags & 0x00020)
         << " UV_STREAM_WRITABLE "
-        << (handle_.flags & 0x00040)
+        << (getHandle()->flags & 0x00040)
         << " UV_STREAM_BLOCKING "
-        << (handle_.flags & 0x00080)
+        << (getHandle()->flags & 0x00080)
         << " UV_STREAM_READ_PARTIAL "
-        << (handle_.flags & 0x00100)
+        << (getHandle()->flags & 0x00100)
         << " UV_STREAM_READ_EOF "
-        << (handle_.flags & 0x00200)
+        << (getHandle()->flags & 0x00200)
         << " UV_TCP_NODELAY "
-        << (handle_.flags & 0x00400)
+        << (getHandle()->flags & 0x00400)
         << " UV_TCP_KEEPALIVE "
-        << (handle_.flags & 0x00800)
+        << (getHandle()->flags & 0x00800)
         << " UV_TCP_SINGLE_ACCEPT "
-        << (handle_.flags & 0x01000)
+        << (getHandle()->flags & 0x01000)
         << " UV_HANDLE_IPV6 "
-        << (handle_.flags & 0x10000)
+        << (getHandle()->flags & 0x10000)
     ;
     assert(!uvRefCnt_);
-    assert(!uv_is_active(reinterpret_cast< uv_handle_t * >(&handle_)));
+    assert(!uv_is_active(reinterpret_cast< uv_handle_t * >(getHandle())));
 
     getLoopData()->down();
 
@@ -272,6 +302,16 @@ char const * const internal::Peer::LoopData::kPSStr[] = {
     PEER_STATE_MAP(XX)
 #undef XX
 };
+
+void Peer::appendPID() const {
+    pid_t pid = getpid();
+
+    if (!pidSeq_.size() || pidSeq_.back().pid != pid) {
+        pidSeq_.push_back((PidSequence){pid, 1});
+    } else {
+        ++pidSeq_.back().count;
+    }
+}
 #endif
 
 } // namespace internal

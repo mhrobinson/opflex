@@ -14,6 +14,8 @@
 #  include <config.h>
 #endif
 
+#include <openssl/err.h>
+#include <openssl/conf.h>
 
 #include <yajr/transport/ZeroCopyOpenSSL.hpp>
 #include <yajr/internal/comms.hpp>
@@ -25,6 +27,9 @@
 
 #include <boost/test/unit_test_log.hpp>
 #include <boost/test/unit_test.hpp>
+
+#include <boost/lexical_cast.hpp>
+#include <boost/scoped_ptr.hpp>
 
 #include <utility>
 
@@ -139,6 +144,11 @@ class CommsFixture {
         uv_close((uv_handle_t *)&prepare_, down_on_close);
 
 #ifdef YAJR_HAS_OPENSSL
+        ERR_remove_state(0); // later equivalent to ERR_remove_thread_state(NULL)
+        CONF_modules_unload(1);
+        ERR_free_strings();
+        EVP_cleanup();
+
         ZeroCopyOpenSSL::finiOpenSSL();
 #endif
 
@@ -742,6 +752,33 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_ipv6, CommsFixture ) {
 
 }
 
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_pipe, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    static const char * domainSocket = "/tmp/comms_test_test_pipe.sock";
+
+    unlink(domainSocket);
+
+    ::yajr::Listener * l = ::yajr::Listener::create(
+            domainSocket, doNothingOnConnect,
+            NULL, NULL, CommsFixture::current_loop, CommsFixture::loopSelector
+    );
+
+    BOOST_CHECK_EQUAL(!l, 0);
+
+    ::yajr::Peer * p = ::yajr::Peer::create(
+            domainSocket, doNothingOnConnect,
+            NULL, CommsFixture::loopSelector
+    );
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(3,3), pc_successful_connect);
+
+}
+
 static void pc_non_existent(void) {
 
     LOG(DEBUG);
@@ -837,6 +874,25 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_non_existent_service, CommsFixture ) {
 
     ::yajr::Peer * p = ::yajr::Peer::create(
             "127.0.0.1", "65533", doNothingOnConnect,
+            NULL, CommsFixture::loopSelector
+    );
+
+    BOOST_CHECK_EQUAL(!p, 0);
+
+    loop_until_final(range_t(1,1), pc_non_existent);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_pipe_no_server, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    static const char * domainSocket = "/tmp/comms_test_test_pipe_no_server.sock";
+
+    unlink(domainSocket);
+
+    ::yajr::Peer * p = ::yajr::Peer::create(
+            domainSocket, doNothingOnConnect,
             NULL, CommsFixture::loopSelector
     );
 
@@ -2109,12 +2165,13 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_no_message_on_SSL, CommsFixture ) {
 
     LOG(DEBUG);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * serverCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > serverCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
             NULL,
             SRCDIR"/test/server.pem",
             "password123"
-        );
+        )
+    );
 
     BOOST_CHECK_EQUAL(!serverCtx, 0);
 
@@ -2127,7 +2184,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_no_message_on_SSL, CommsFixture ) {
             65514,
             attachPassiveSslTransportOnConnect,
             passthroughAccept,
-            serverCtx,
+            serverCtx.get(),
             CommsFixture::current_loop, CommsFixture::loopSelector
     );
 
@@ -2142,11 +2199,12 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_no_message_on_SSL, CommsFixture ) {
 
     BOOST_CHECK_EQUAL(!p, 0);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * clientCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > clientCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
             SRCDIR"/test/ca.pem",
             NULL
-        );
+        )
+    );
 
     BOOST_CHECK_EQUAL(!clientCtx, 0);
 
@@ -2154,7 +2212,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_no_message_on_SSL, CommsFixture ) {
         return;
     }
 
-    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx);
+    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx.get());
 
     BOOST_CHECK_EQUAL(ok, true);
 
@@ -2223,12 +2281,13 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_single_message_on_SSL, CommsFixture ) {
 
     LOG(DEBUG);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * serverCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > serverCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
             NULL,
             SRCDIR"/test/server.pem",
             "password123"
-        );
+        )
+    );
 
     BOOST_CHECK_EQUAL(!serverCtx, 0);
 
@@ -2241,7 +2300,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_single_message_on_SSL, CommsFixture ) {
             65514,
             attachPassiveSslTransportOnConnect,
             passthroughAccept,
-            serverCtx,
+            serverCtx.get(),
             CommsFixture::current_loop, CommsFixture::loopSelector
     );
 
@@ -2256,11 +2315,12 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_single_message_on_SSL, CommsFixture ) {
 
     BOOST_CHECK_EQUAL(!p, 0);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * clientCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > clientCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
             SRCDIR"/test/ca.pem",
             NULL
-        );
+        )
+    );
 
     BOOST_CHECK_EQUAL(!clientCtx, 0);
 
@@ -2268,7 +2328,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_single_message_on_SSL, CommsFixture ) {
         return;
     }
 
-    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx);
+    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx.get());
 
     BOOST_CHECK_EQUAL(ok, true);
 
@@ -2284,12 +2344,14 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive_on_SSL, CommsFixture ) {
 
     LOG(DEBUG);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * serverCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > serverCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
             NULL,
-            "test/server.pem",
+            SRCDIR"/test/server.pem",
             "password123"
-        );
+        )
+    );
+
 
     BOOST_CHECK_EQUAL(!serverCtx, 0);
 
@@ -2302,7 +2364,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive_on_SSL, CommsFixture ) {
             65513,
             attachPassiveSslTransportOnConnect,
             passthroughAccept,
-            serverCtx,
+            serverCtx.get(),
             CommsFixture::current_loop, CommsFixture::loopSelector
     );
 
@@ -2317,11 +2379,12 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive_on_SSL, CommsFixture ) {
 
     BOOST_CHECK_EQUAL(!p, 0);
 
-    ::yajr::transport::ZeroCopyOpenSSL::Ctx * clientCtx =
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > clientCtx(
         ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
-            "test/ca.pem",
+            SRCDIR"/test/ca.pem",
             NULL
-        );
+        )
+    );
 
     BOOST_CHECK_EQUAL(!clientCtx, 0);
 
@@ -2329,7 +2392,7 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive_on_SSL, CommsFixture ) {
         return;
     }
 
-    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx);
+    bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx.get());
 
     BOOST_CHECK_EQUAL(ok, true);
 
@@ -2341,6 +2404,106 @@ BOOST_FIXTURE_TEST_CASE( STABLE_test_keepalive_on_SSL, CommsFixture ) {
 
 }
 
+void pc_successful_connect200(void) {
+
+    LOG(DEBUG);
+
+    /* empty */
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::RETRY_TO_CONNECT)
+            ->size(), 0);
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::RETRY_TO_LISTEN)
+            ->size(), 0);
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::ATTEMPTING_TO_CONNECT)
+            ->size(), 0);
+
+    /* non-empty */
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::ONLINE)
+            ->size(), 400);
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::LISTENING)
+            ->size(), 200);
+
+    /* no-transient guys */
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::TO_RESOLVE)
+            ->size(), 0);
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::TO_LISTEN)
+            ->size(), 0);
+    BOOST_CHECK_EQUAL(internal::Peer::LoopData::getPeerList(CommsFixture::current_loop,
+                internal::Peer::LoopData::PENDING_DELETE)
+            ->size(), 0);
+
+}
+
+BOOST_FIXTURE_TEST_CASE( STABLE_test_several_SSL_peers, CommsFixture ) {
+
+    LOG(DEBUG);
+
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > serverCtx(
+        ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
+            NULL,
+            SRCDIR"/test/server.pem",
+            "password123"
+        )
+    );
+
+    BOOST_CHECK_EQUAL(!serverCtx, 0);
+
+    if (!serverCtx) {
+        return;
+    }
+
+    boost::scoped_ptr< ::yajr::transport::ZeroCopyOpenSSL::Ctx > clientCtx(
+        ::yajr::transport::ZeroCopyOpenSSL::Ctx::createCtx(
+            SRCDIR"/test/ca.pem",
+            NULL
+        )
+    );
+
+    BOOST_CHECK_EQUAL(!clientCtx, 0);
+
+    if (!clientCtx) {
+        return;
+    }
+
+    for(size_t n = 0; n < 200; ++n) {
+        ::yajr::Listener * l = ::yajr::Listener::create(
+                "127.0.0.1",
+                65513-n,
+                attachPassiveSslTransportOnConnect,
+                passthroughAccept,
+                serverCtx.get(),
+                CommsFixture::current_loop, CommsFixture::loopSelector
+        );
+
+        BOOST_CHECK_EQUAL(!l, 0);
+
+        ::yajr::Peer * p = ::yajr::Peer::create(
+                "127.0.0.1",
+                boost::lexical_cast<std::string>(65513-n),
+                singlePingOnConnect,
+                NULL, CommsFixture::loopSelector
+        );
+
+        BOOST_CHECK_EQUAL(!p, 0);
+
+        bool ok = ZeroCopyOpenSSL::attachTransport(p, clientCtx.get());
+
+        BOOST_CHECK_EQUAL(ok, true);
+
+        if (!ok) {
+            return;
+        }
+    }
+
+    loop_until_final(range_t(401,401), pc_successful_connect200, range_t(0,0), true, 800); // 401 is to cause a timeout
+
+}
 #endif
 
 

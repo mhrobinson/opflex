@@ -13,6 +13,8 @@
 #include <opflex/modb/ObjectListener.h>
 #include <modelgbp/metadata/metadata.hpp>
 #include <boost/noncopyable.hpp>
+#include <boost/random/random_device.hpp>
+#include <boost/random/mersenne_twister.hpp>
 
 #include "Endpoint.h"
 #include "EndpointListener.h"
@@ -96,13 +98,25 @@ public:
 
     /**
      * Get the set of endpoints that exist for a given endpoint group
-     * 
+     *
      * @param egURI the URI for the endpoint group
      * @param eps a set that will be filled with the UUIDs of matching
      * endpoints.
      */
     void getEndpointsForGroup(const opflex::modb::URI& egURI,
                               /* out */ boost::unordered_set<std::string>& eps);
+
+    /**
+     * Get the set of endpoints with IP address mappings mapped to the
+     * given endpoint group
+     *
+     * @param egURI the URI for the endpoint group for the ip address
+     * mappings
+     * @param eps a set that will be filled with the UUIDs of matching
+     * endpoints.
+     */
+    void getEndpointsForIPMGroup(const opflex::modb::URI& egURI,
+                                 /* out */ boost::unordered_set<std::string>& eps);
 
     /**
      * Get the endpoints that are on a particular interface
@@ -114,6 +128,18 @@ public:
     void getEndpointsByIface(const std::string& ifaceName,
                              /* out */ boost::unordered_set<std::string>& eps);
     
+    /**
+     * Get the endpoints that have an IP mapping next hop interface as
+     * the specified interface
+     *
+     * @param ifaceName the name of the interface
+     * @param eps a set that will be filled with the UUIDs of matching
+     * endpoints.
+     */
+    void getEndpointsByIpmNextHopIf(const std::string& ifaceName,
+                                    /* out */
+                                    boost::unordered_set<std::string>& eps);
+
     /**
      * Counter values for endpoint stats
      */
@@ -236,6 +262,12 @@ private:
         boost::optional<opflex::modb::URI> egURI;
 
         /**
+         * The set of endpoint groups referenced by endpoint IP
+         * address mappings
+         */
+        uri_set_t ipMappingGroups;
+
+        /**
          * reference to the vmep object related to this endpoint that
          * registers the VM to trigger attribute resolution
          */
@@ -285,9 +317,20 @@ private:
     group_ep_map_t group_ep_map;
 
     /**
+     * Map IP address mapping group URIs to a set of endpoint UUIDs
+     */
+    group_ep_map_t ipm_group_ep_map;
+
+    /**
      * Map endpoint interface names to a set of endpoint UUIDs
      */
     string_ep_map_t iface_ep_map;
+
+    /**
+     * Map ip address mapping next hop interface names to a set of
+     * endpoint UUIDs
+     */
+    string_ep_map_t ipm_nexthop_if_ep_map;
 
     /**
      * Map epgmapping objects to a set of endpoint UUIDs that use them

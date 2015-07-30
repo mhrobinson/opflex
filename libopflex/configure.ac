@@ -21,7 +21,7 @@ dnl Before doing a release, edit:
 dnl 1. the version in AC_INIT
 dnl 2. the libtool version in VERSION_INFO
 
-m4_define([sdk_pversion], 0)
+m4_define([sdk_pversion], 1)
 m4_define([sdk_sversion], 1)
 m4_define([sdk_iversion], 0)
 AC_INIT([libopflex], [sdk_pversion.sdk_sversion.sdk_iversion])
@@ -88,6 +88,12 @@ AC_ARG_ENABLE(comms-trace,
                              [Trace all function calls within opflex communications library]))
 AM_CONDITIONAL(TRACING_COMMS, [test x$enable_comms_trace = 'xyes'])
 
+dnl Create an option to build unit tests only with make check
+AC_ARG_ENABLE(tests-make-all,
+              AC_HELP_STRING([--disable-tests-make-all],
+                             [Disable building tests with make all]))
+AM_CONDITIONAL(MAKE_ALL_TESTS, [test x$enable_tests_make_all != 'xno'])
+
 dnl ---------------------------------------------------------------
 dnl Environment introspection
 
@@ -135,10 +141,7 @@ AX_BOOST_UNIT_TEST_FRAMEWORK
 dnl Package-config dependencies
 PKG_CHECK_MODULES([UV], [libuv >= 0.11.0])
 PKG_CHECK_MODULES([OPENSSL], [openssl >= 0.9.8])
-
-dnl rapidjson
-AC_CHECK_HEADER([rapidjson/rapidjson.h],
-                [], AC_MSG_ERROR([RapidJson is required]))
+PKG_CHECK_MODULES([RAPIDJSON], [RapidJSON >= 1.0])
 
 dnl Older versions of autoconf don't define docdir
 if test x$docdir = x; then
@@ -148,14 +151,11 @@ fi
 dnl ---------------------------------------------------------------
 dnl Build constants
 
-AC_DEFINE_UNQUOTED(SDK_PVERSION, [sdk_pversion], [Major version])
-AC_DEFINE_UNQUOTED(SDK_SVERSION, [sdk_sversion], [Minor version])
-AC_DEFINE_UNQUOTED(SDK_IVERSION, [sdk_iversion], [Incremental version])
-AC_DEFINE_UNQUOTED(SDK_BVERSION, ["${sdk_bversion}"])
-AC_DEFINE_UNQUOTED(SDK_BVERSION, [${sdk_bversion}], [Build version])
-AC_DEFINE_UNQUOTED(SDK_FULL_VERSION, ["sdk_pversion.sdk_sversion.sdk_iversion-${sdk_bversion}"], 
-                                     [Full version])
+AC_SUBST(SDK_PVERSION, [sdk_pversion])
+AC_SUBST(SDK_SVERSION, [sdk_sversion])
+AC_SUBST(SDK_IVERSION, [sdk_iversion])
 AC_SUBST(SDK_BVERSION, [${sdk_bversion}])
+AC_SUBST(SDK_FULL_VERSION, ["sdk_pversion.sdk_sversion.sdk_iversion-${sdk_bversion}"])
 
 dnl ---------------------------------------------------------------
 dnl Output

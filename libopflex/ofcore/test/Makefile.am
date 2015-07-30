@@ -13,7 +13,18 @@
 AM_CPPFLAGS = $(BOOST_CPPFLAGS) -DBOOST_TEST_DYN_LINK \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/util/include \
-	-I$(top_srcdir)/modb/test 
+	-I$(top_srcdir)/3rdparty/codes/trunk/codes.cpp \
+	-I$(top_srcdir)/comms/include \
+	-I$(top_srcdir)/modb/include \
+	-I$(top_srcdir)/engine/include \
+	-I$(top_srcdir)/logging/include \
+	-I$(top_srcdir)/modb/test \
+	-DSDK_PVERSION='@SDK_PVERSION@' \
+	-DSDK_SVERSION='@SDK_SVERSION@' \
+	-DSDK_IVERSION='@SDK_IVERSION@' \
+	-DSDK_BVERSION='"@SDK_BVERSION@"' \
+	-DSDK_FULL_VERSION='"@SDK_FULL_VERSION@"'
+
 AM_LDFLAGS = $(BOOST_LDFLAGS)
 
 TESTS = core_test
@@ -26,6 +37,7 @@ core_test_SOURCES = \
 	testmodel/class5.h \
 	main.cpp \
 	OFFramework_test.cpp \
+	Inspector_test.cpp \
 	MO_test.cpp
 
 core_test_CXXFLAGS = $(UV_CFLAGS)
@@ -37,4 +49,8 @@ core_test_LDADD = ../libcore.la \
 	../../logging/liblogging.la \
 	$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
 
-noinst_PROGRAMS = $(TESTS)
+if MAKE_ALL_TESTS
+    noinst_PROGRAMS = $(TESTS)
+else
+    check_PROGRAMS = $(TESTS)
+endif

@@ -689,6 +689,19 @@ public:
                            const std::string& domain);
 
     /**
+     * Set the opflex identity information for this framework
+     * instance.
+     *
+     * @param name the unique name for this opflex component within
+     * the policy domain
+     * @param domain the globally unique name for this policy domain
+     * @param location the location string for this policy element.
+     */
+    void setOpflexIdentity(const std::string& name,
+                           const std::string& domain,
+                           const std::string& location);
+
+    /**
      * Start the framework.  This will start all the framework threads
      * and attempt to connect to configured OpFlex peers.
      */
@@ -702,12 +715,18 @@ public:
     /**
      * Dump the managed object database to the file specified as a
      * JSON blob.
-     * 
-     * @param the class ID of the root of your managed object tree
+     *
      * @param file the file to write to.
      */
-    virtual void dumpMODB(modb::class_id_t root_class_id,
-                          const std::string& file);
+    virtual void dumpMODB(const std::string& file);
+
+    /**
+     * Dump the managed object database to the file specified as a
+     * JSON blob.
+     * 
+     * @param file the file to write to.
+     */
+    virtual void dumpMODB(FILE* file);
 
     /**
      * Enable SSL for connections to opflex peers
@@ -720,6 +739,15 @@ public:
      */
     virtual void enableSSL(const std::string& caStorePath,
                            bool verifyPeers = true);
+
+    /**
+     * Enable the MODB inspector service.  The service will listen on
+     * the specified UNIX domain socket for connections from the
+     * inspector client.
+     *
+     * @param socketName A path to the UNIX domain socket
+     */
+    virtual void enableInspector(const std::string& socketName);
 
     /**
      * Add an OpFlex peer.  If the framework is started, this will

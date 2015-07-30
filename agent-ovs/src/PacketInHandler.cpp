@@ -116,7 +116,7 @@ bool PacketInHandler::writeLearnFlow(SwitchConnection *conn,
 }
 
 static uint32_t getOutputRegValue(const FlowEntryPtr& fe) {
-    struct ofpact* a;
+    const struct ofpact* a;
     OFPACT_FOR_EACH (a, fe->entry->ofpacts, fe->entry->ofpacts_len) {
         if (a->type == OFPACT_SET_FIELD) {
             struct ofpact_set_field* sf = ofpact_get_SET_FIELD(a);
@@ -181,7 +181,8 @@ void PacketInHandler::dstFlowCb(const FlowEntryList& flows,
 void PacketInHandler::anyFlowCb(const FlowEntryList& flows) {
     if (!switchConnection) return;
     BOOST_FOREACH(const FlowEntryPtr& fe, flows) {
-        if (!reconcileReactiveFlow(fe)) {
+        if (fe->entry->cookie == FlowManager::GetLearnEntryCookie() &&
+            !reconcileReactiveFlow(fe)) {
             removeLearnFlow(switchConnection, fe);
         }
     }
@@ -192,7 +193,7 @@ bool PacketInHandler::reconcileReactiveFlow(const FlowEntryPtr& fe) {
 
     if (!portMapper) return true;
     if (fe->entry->cookie != FlowManager::GetLearnEntryCookie())
-        return true;
+        return false;   // non-reactive entries must be reconciled
 
     uint32_t port = getOutputRegValue(fe);
     if (port == flowManager.GetTunnelPort())
@@ -294,10 +295,12 @@ void PacketInHandler::handleLearnPktIn(SwitchConnection *conn,
     }
 }
 
-static void send_packet_out(SwitchConnection *conn,
+static void send_packet_out(FlowManager& flowManager,
+                            SwitchConnection *conn,
                             struct ofpbuf* b,
                             ofputil_protocol& proto,
-                            uint32_t in_port) {
+                            uint32_t in_port,
+                            uint32_t out_port = OFPP_IN_PORT) {
     // send reply as packet-out
     struct ofputil_packet_out po;
     po.buffer_id = UINT32_MAX;
@@ -305,8 +308,13 @@ static void send_packet_out(SwitchConnection *conn,
     po.packet_len = ofpbuf_size(b);
     po.in_port = in_port;
 
+    uint32_t tunPort = flowManager.GetTunnelPort();
+
     ActionBuilder ab;
-    ab.SetOutputToPort(OFPP_IN_PORT);
+    if (out_port == tunPort || (in_port == tunPort && out_port == OFPP_IN_PORT))
+        FlowManager::SetActionTunnelMetadata(ab, flowManager.GetEncapType(),
+                                             flowManager.GetTunnelDst());
+    ab.SetOutputToPort(out_port);
     ab.Build(&po);
 
     struct ofpbuf* message = ofputil_encode_packet_out(&po, proto);
@@ -325,20 +333,20 @@ static void send_packet_out(SwitchConnection *conn,
  * reply is written as a packet-out to the connection
  *
  * @param agent the agent object
+ * @param flowManager the flow manager
  * @param conn the openflow switch connection
  * @param pi the packet-in
  * @param proto an openflow proto object
  * @param pkt the packet from the packet-in
  * @param flow the parsed flow from the packet
- * @param virtualRouterMac the MAC address of the virtual router
  */
 static void handleNDPktIn(Agent& agent,
+                          FlowManager& flowManager,
                           SwitchConnection *conn,
                           struct ofputil_packet_in& pi,
                           ofputil_protocol& proto,
                           struct ofpbuf& pkt,
-                          struct flow& flow,
-                          const uint8_t* virtualRouterMac) {
+                          struct flow& flow) {
     uint32_t epgId = (uint32_t)pi.fmd.regs[0];
     PolicyManager& polMgr = agent.getPolicyManager();
     optional<URI> egUri = polMgr.getGroupForVnid(epgId);
@@ -358,6 +366,15 @@ static void handleNDPktIn(Agent& agent,
 
     struct ofpbuf* b = NULL;
 
+    const uint8_t* mac = flowManager.GetRouterMacAddr();
+    bool router = true;
+    // Use the MAC address from the metadata if available
+    uint64_t metadata = ntohll(pi.fmd.metadata);
+    if (((uint8_t*)&metadata)[7] == 1) {
+        mac = (uint8_t*)&metadata;
+        router = mac[6] == 1;
+    }
+
     if (icmp->icmp6_type == ND_NEIGHBOR_SOLICIT) {
         /* Neighbor solicitation */
         struct nd_neighbor_solicit* neigh_sol = 
@@ -366,14 +383,11 @@ static void handleNDPktIn(Agent& agent,
             return;
 
         LOG(DEBUG) << "Handling ICMPv6 neighbor solicitation";
+        uint32_t flags = ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE;
+        if (router) flags |= ND_NA_FLAG_ROUTER;
 
-        // we only get neighbor solicitation packets for our router
-        // IP, so we just always reply with our router MAC to the
-        // requested IP.
-        b = packets::compose_icmp6_neigh_ad(ND_NA_FLAG_ROUTER | 
-                                            ND_NA_FLAG_SOLICITED | 
-                                            ND_NA_FLAG_OVERRIDE,
-                                            virtualRouterMac,
+        b = packets::compose_icmp6_neigh_ad(flags,
+                                            mac,
                                             flow.dl_src,
                                             &neigh_sol->nd_ns_target,
                                             &flow.ipv6_src);
@@ -387,7 +401,7 @@ static void handleNDPktIn(Agent& agent,
 
         LOG(DEBUG) << "Handling ICMPv6 router solicitation";
 
-        b = packets::compose_icmp6_router_ad(virtualRouterMac,
+        b = packets::compose_icmp6_router_ad(mac,
                                              flow.dl_src,
                                              &flow.ipv6_src,
                                              egUri.get(),
@@ -395,17 +409,16 @@ static void handleNDPktIn(Agent& agent,
     }
 
     if (b)
-        send_packet_out(conn, b, proto, pi.fmd.in_port);
+        send_packet_out(flowManager, conn, b, proto, pi.fmd.in_port);
 }
 
 static void handleDHCPv4PktIn(shared_ptr<const Endpoint>& ep,
-                              Agent& agent,
+                              FlowManager& flowManager,
                               SwitchConnection *conn,
                               struct ofputil_packet_in& pi,
                               ofputil_protocol& proto,
                               struct ofpbuf& pkt,
-                              struct flow& flow,
-                              const uint8_t* virtualDhcpMac) {
+                              struct flow& flow) {
     using namespace dhcp;
     using namespace udp;
 
@@ -494,7 +507,7 @@ static void handleDHCPv4PktIn(shared_ptr<const Endpoint>& ep,
 
     b = packets::compose_dhcpv4_reply(reply_type,
                                       dhcp_pkt->xid,
-                                      virtualDhcpMac,
+                                      flowManager.GetDHCPMacAddr(),
                                       flow.dl_src,
                                       dhcpIp.to_ulong(),
                                       prefixLen,
@@ -504,17 +517,16 @@ static void handleDHCPv4PktIn(shared_ptr<const Endpoint>& ep,
                                       v4c.get().getStaticRoutes());
 
     if (b)
-        send_packet_out(conn, b, proto, pi.fmd.in_port);
+        send_packet_out(flowManager, conn, b, proto, pi.fmd.in_port);
 }
 
 static void handleDHCPv6PktIn(shared_ptr<const Endpoint>& ep,
-                              Agent& agent,
+                              FlowManager& flowManager,
                               SwitchConnection *conn,
                               struct ofputil_packet_in& pi,
                               ofputil_protocol& proto,
                               struct ofpbuf& pkt,
-                              struct flow& flow,
-                              const uint8_t* virtualDhcpMac) {
+                              struct flow& flow) {
     using namespace dhcp6;
     using namespace udp;
 
@@ -614,7 +626,7 @@ static void handleDHCPv6PktIn(shared_ptr<const Endpoint>& ep,
 
     b = packets::compose_dhcpv6_reply(reply_type,
                                       dhcp_pkt->transaction_id,
-                                      virtualDhcpMac,
+                                      flowManager.GetDHCPMacAddr(),
                                       flow.dl_src,
                                       &flow.ipv6_src,
                                       client_id,
@@ -627,16 +639,17 @@ static void handleDHCPv6PktIn(shared_ptr<const Endpoint>& ep,
                                       rapid_commit);
 
     if (b)
-        send_packet_out(conn, b, proto, pi.fmd.in_port);
+        send_packet_out(flowManager, conn, b, proto, pi.fmd.in_port);
 }
 
 
 /**
- * Handle a packet-in for DHCP messages messages.  The
- * reply is written as a packet-out to the connection
+ * Handle a packet-in for DHCP messages.  The reply is written as a
+ * packet-out to the connection
  *
  * @param v4 true if this is a DHCPv4 message, or false for DHCPv6
  * @param agent the agent object
+ * @param flowManager the flow manager
  * @param conn the openflow switch connection
  * @param pi the packet-in
  * @param proto an openflow proto object
@@ -646,12 +659,12 @@ static void handleDHCPv6PktIn(shared_ptr<const Endpoint>& ep,
  */
 static void handleDHCPPktIn(bool v4,
                             Agent& agent,
+                            FlowManager& flowManager,
                             SwitchConnection *conn,
                             struct ofputil_packet_in& pi,
                             ofputil_protocol& proto,
                             struct ofpbuf& pkt,
-                            struct flow& flow,
-                            const uint8_t* virtualDhcpMac) {
+                            struct flow& flow) {
     uint32_t epgId = (uint32_t)pi.fmd.regs[0];
     PolicyManager& polMgr = agent.getPolicyManager();
     EndpointManager& epMgr = agent.getEndpointManager();
@@ -677,11 +690,9 @@ static void handleDHCPPktIn(bool v4,
 
     if (!ep) return;
     if (v4)
-        handleDHCPv4PktIn(ep, agent, conn, pi, proto,
-                          pkt, flow, virtualDhcpMac);
+        handleDHCPv4PktIn(ep, flowManager, conn, pi, proto, pkt, flow);
     else
-        handleDHCPv6PktIn(ep, agent, conn, pi, proto,
-                          pkt, flow, virtualDhcpMac);
+        handleDHCPv6PktIn(ep, flowManager, conn, pi, proto, pkt, flow);
 
 }
 
@@ -717,14 +728,11 @@ void PacketInHandler::Handle(SwitchConnection *conn,
         pi.cookie == FlowManager::GetProactiveLearnEntryCookie())
         handleLearnPktIn(conn, pi, proto, pkt, flow);
     else if (pi.cookie == FlowManager::GetNDCookie())
-        handleNDPktIn(agent, conn, pi, proto, pkt,
-                      flow, flowManager.GetRouterMacAddr());
+        handleNDPktIn(agent, flowManager, conn, pi, proto, pkt, flow);
     else if (pi.cookie == FlowManager::GetDHCPCookie(true))
-        handleDHCPPktIn(true, agent, conn, pi,
-                        proto, pkt, flow, flowManager.GetDHCPMacAddr());
+        handleDHCPPktIn(true, agent, flowManager, conn, pi, proto, pkt, flow);
     else if (pi.cookie == FlowManager::GetDHCPCookie(false))
-        handleDHCPPktIn(false, agent, conn, pi,
-                        proto, pkt, flow, flowManager.GetDHCPMacAddr());
+        handleDHCPPktIn(false, agent, flowManager, conn, pi, proto, pkt, flow);
 }
 
 } /* namespace ovsagent */

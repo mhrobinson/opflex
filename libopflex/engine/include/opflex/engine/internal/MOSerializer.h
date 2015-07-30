@@ -230,21 +230,22 @@ public:
         writer.EndArray();
         
         try {
-            std::pair<modb::URI, modb::prop_id_t> parent = 
-                client.getParent(class_id, uri);
-            const modb::ClassInfo& parent_class = 
-                store->getPropClassInfo(parent.second);
-            const modb::PropertyInfo& parent_prop = 
-                parent_class.getProperty(parent.second);
+            std::pair<modb::URI, modb::prop_id_t> parent(modb::URI::ROOT, 0);
+            if (client.getParent(class_id, uri, parent)) {
+                const modb::ClassInfo& parent_class =
+                    store->getPropClassInfo(parent.second);
+                const modb::PropertyInfo& parent_prop =
+                    parent_class.getProperty(parent.second);
 
-            writer.String("parent_subject");
-            writer.String(parent_class.getName().c_str());
-            writer.String("parent_uri");
-            writer.String(parent.first.toString().c_str());
-            writer.String("parent_relation");
-            writer.String(parent_prop.getName().c_str());
-        } catch (std::out_of_range e) {
-            // no parent
+                writer.String("parent_subject");
+                writer.String(parent_class.getName().c_str());
+                writer.String("parent_uri");
+                writer.String(parent.first.toString().c_str());
+                writer.String("parent_relation");
+                writer.String(parent_prop.getName().c_str());
+            }
+        } catch (const std::out_of_range& e) {
+            // some parent info not found
         }
 
         writer.EndObject();
@@ -275,6 +276,42 @@ public:
                      bool replaceChildren,
                      /* out */
                      modb::mointernal::StoreClient::notif_t* notifs = NULL);
+
+    /**
+     * Dump the managed object database to the file specified as a
+     * JSON blob.
+     *
+     * @param file the file to write to.
+     */
+    void dumpMODB(const std::string& file);
+
+    /**
+     * Dump the managed object database to the file specified as a
+     * JSON blob.
+     *
+     * @param file the file to write to.
+     */
+    void dumpMODB(FILE* file);
+
+    /**
+     * Read managed objects from the given file into the MODB
+     *
+     * @param file the file containing the managed objects
+     * @param client the store client to use
+     * @param return the number of managed objects read
+     */
+    size_t readMOs(FILE* file,
+                   modb::mointernal::StoreClient& client);
+
+    /**
+     * Display the managed object database in a human-readable format
+     *
+     * @param ostream the output stream to write to
+     * @param tree display in a nested tree format
+     * @param includeProps include the properties of the objects
+     */
+    void displayMODB(std::ostream& ostream,
+                     bool tree = true, bool includeProps = false);
 
 private:
     modb::ObjectStore* store;
@@ -352,6 +389,15 @@ private:
                           const rapidjson::Value& v,
                           modb::mointernal::ObjectInstance& oi,
                           bool scalar);
+
+    /**
+     * Display a particular object
+     */
+    void displayObject(std::ostream& ostream,
+                       modb::class_id_t class_id,
+                       const modb::URI& uri,
+                       bool tree, bool root, bool includeProps,
+                       bool last, const std::string& prefix);
 
 };
 

@@ -18,13 +18,17 @@ AM_CPPFLAGS = $(BOOST_CPPFLAGS) \
 	-I$(top_srcdir)/util/include \
 	-I$(top_srcdir)/logging/include \
 	-I$(top_srcdir)/engine/include \
-	-I$(top_srcdir)/3rdparty/rapidjson/include \
 	-I$(top_srcdir)/comms/include \
-	-I$(top_srcdir)/comms
+	-I$(top_srcdir)/comms \
+	-DSDK_PVERSION='@SDK_PVERSION@' \
+	-DSDK_SVERSION='@SDK_SVERSION@' \
+	-DSDK_IVERSION='@SDK_IVERSION@' \
+	-DSDK_BVERSION='"@SDK_BVERSION@"' \
+	-DSDK_FULL_VERSION='"@SDK_FULL_VERSION@"'
 
 noinst_LTLIBRARIES = libcore.la
 
-libcore_la_CXXFLAGS = $(UV_CFLAGS)
+libcore_la_CXXFLAGS = $(UV_CFLAGS) $(RAPIDJSON_CFLAGS)
 libcore_la_LIBADD = $(UV_LIBS)
 libcore_la_SOURCES = \
 	OFFramework.cpp \

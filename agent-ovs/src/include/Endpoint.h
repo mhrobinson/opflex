@@ -53,7 +53,7 @@ public:
      * field will not be set to the correct URI.  Instead, @see
      * EndpointManager::getComputedEPG.
      *
-     * @return the endpoint URI
+     * @return the endpoint group URI
      */
     const boost::optional<opflex::modb::URI>& getEgURI() const {
         return egURI;
@@ -517,6 +517,203 @@ public:
         return dhcpv6Config;
     }
 
+    /**
+     * IP address mapping for floating IP addresses and/or SNAT
+     * mappings
+     */
+    class IPAddressMapping {
+    public:
+        /**
+         * Construct a new address mapping
+         *
+         * @param uuid a unique ID for this address mapping
+         */
+        IPAddressMapping(const std::string& uuid_) : uuid(uuid_) { }
+
+        /**
+         * Get the UUID for this address mapping
+         * @return the unique ID for the address mapping
+         */
+        const std::string& getUUID() const {
+            return uuid;
+        }
+
+        /**
+         * Set the UUID for the address mapping
+         *
+         * @param uuid the unique ID for the address mapping
+         */
+        void setUUID(const std::string& uuid) {
+            this->uuid = uuid;
+        }
+
+        /**
+         * Get the floating IP address for this address mapping
+         *
+         * @return the IP address
+         */
+        const boost::optional<std::string>& getFloatingIP() const {
+            return floatingIp;
+        }
+
+        /**
+         * Set the IP address for the address mapping
+         *
+         * @param ip the IP address
+         */
+        void setFloatingIP(const std::string& floatingIp) {
+            this->floatingIp = floatingIp;
+        }
+
+        /**
+         * Unset the IP address for the address mapping
+         */
+        void unsetFloatingIP() {
+            floatingIp = boost::none;
+        }
+
+        /**
+         * Get the "real" IP address to which this address mapping is mapped
+         *
+         * @return the mapped IP address
+         */
+        const boost::optional<std::string>& getMappedIP() const {
+            return mappedIp;
+        }
+
+        /**
+         * Set the "real" IP address to which this address mapping is mapped
+         *
+         * @param mappedIp the mapped IP address
+         */
+        void setMappedIP(const std::string& mappedIp) {
+            this->mappedIp = mappedIp;
+        }
+
+        /**
+         * Unset the mapped IP address for the address mapping
+         */
+        void unsetMappedIP() {
+            mappedIp = boost::none;
+        }
+
+        /**
+         * Get the next hop interface for this address mapping.  If
+         * this value is set, after performing the address mapping the
+         * flow will be delivered to this interface rather than being
+         * processed normally.
+         *
+         * @return the next hop interface
+         */
+        const boost::optional<std::string>& getNextHopIf() const {
+            return nextHopIf;
+        }
+
+        /**
+         * Set the next hop interface for the address mapping
+         *
+         * @param nextHopIf The name of the switch interface for the
+         * next hop
+         */
+        void setNextHopIf(const std::string& nextHopIf) {
+            this->nextHopIf = nextHopIf;
+        }
+
+        /**
+         * Unset the next hop interface the address mapping
+         */
+        void unsetNextHopIf() {
+            nextHopIf = boost::none;
+        }
+
+        /**
+         * Get the next hop MAC address for this IP address mapping.
+         * If set, use this router MAC address as the destination MAC
+         * instead of the regular subnet router MAC address
+         *
+         * @return the hext hop MAC address
+         */
+        const boost::optional<opflex::modb::MAC>& getNextHopMAC() const {
+            return nextHopMac;
+        }
+
+        /**
+         * Set the next hop MAC address for the endpoint
+         *
+         * @param mac the MAC address
+         */
+        void setNextHopMAC(const opflex::modb::MAC& nextHopMac) {
+            this->nextHopMac = nextHopMac;
+        }
+
+        /**
+         * Unset the next hop MAC address for the endpoint
+         */
+        void unsetNextHopMAC() {
+            nextHopMac = boost::none;
+        }
+
+        /**
+         * Get the endpoint group associated with this address mapping.
+         * This is the endpoint group into which the address mapping
+         * address will be mapped.
+         *
+         * @return the endpoint group URI
+         */
+        const boost::optional<opflex::modb::URI>& getEgURI() const {
+            return egURI;
+        }
+
+        /**
+         * Set the endpoint group associated with this address mapping.
+         * This is the endpoint group into which the address mapping
+         * address will be mapped.
+         *
+         * @param egURI the URI to set
+         */
+        void setEgURI(const opflex::modb::URI& egURI) {
+            this->egURI = egURI;
+        }
+
+        /**
+         * Unset the endpoint group URI
+         */
+        void unsetEgURI() {
+            egURI = boost::none;
+        }
+
+    private:
+        std::string uuid;
+        boost::optional<opflex::modb::MAC> nextHopMac;
+        boost::optional<std::string> floatingIp;
+        boost::optional<std::string> mappedIp;
+        boost::optional<std::string> nextHopIf;
+        boost::optional<opflex::modb::URI> egURI;
+    };
+
+    /**
+     * Clear the list of address mappings
+     */
+    void clearIPAddressMappings() {
+        ipAddressMappings.clear();
+    }
+
+    /**
+     * Add a address mapping to the endpoint
+     *
+     * @param iPAddressMapping the address mapping object
+     */
+    void addIPAddressMapping(const IPAddressMapping& ipAddressMapping);
+
+    /**
+     * Get the set of address mappings for the endpoint
+     *
+     * @return a set of address mapping objects
+     */
+    const boost::unordered_set<IPAddressMapping>& getIPAddressMappings() const {
+        return ipAddressMappings;
+    }
+
 private:
     std::string uuid;
     boost::optional<opflex::modb::MAC> mac;
@@ -528,12 +725,29 @@ private:
     attr_map_t attributes;
     boost::optional<DHCPv4Config> dhcpv4Config;
     boost::optional<DHCPv6Config> dhcpv6Config;
+    boost::unordered_set<IPAddressMapping> ipAddressMappings;
 };
 
 /**
  * Print an endpoint to an ostream
  */
 std::ostream & operator<<(std::ostream &os, const Endpoint& ep);
+
+/**
+ * Compute a hash value for a address mapping
+ */
+size_t hash_value(Endpoint::IPAddressMapping const& ip);
+
+/**
+ * Check for address mapping equality.
+ */
+bool operator==(const Endpoint::IPAddressMapping& lhs,
+                const Endpoint::IPAddressMapping& rhs);
+/**
+ * Check for address mapping inequality.
+ */
+bool operator!=(const Endpoint::IPAddressMapping& lhs,
+                const Endpoint::IPAddressMapping& rhs);
 
 } /* namespace ovsagent */
 

@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     if (daemon)
         daemonize();
 
-    initLogging(level_str, log_file);
+    initLogging(level_str, false /*syslog*/, log_file);
 
     try {
         if (sample_file != "") {
@@ -125,8 +125,7 @@ int main(int argc, char** argv) {
             Policies::writeBasicInit(mframework);
             Policies::writeTestPolicy(mframework);
             
-            mframework.dumpMODB(modelgbp::dmtree::Root::CLASS_ID,
-                                sample_file);
+            mframework.dumpMODB(sample_file);
             
             mframework.stop();
             return 0;

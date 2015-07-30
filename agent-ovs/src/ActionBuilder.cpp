@@ -14,9 +14,13 @@
 
 extern const struct mf_field mf_fields[MFF_N_IDS];
 
+using boost::asio::ip::address;
+using boost::asio::ip::address_v4;
+using boost::asio::ip::address_v6;
+
 namespace ovsagent {
 
-ActionBuilder::ActionBuilder() {
+ActionBuilder::ActionBuilder() : flowHasVlan(false) {
     ofpbuf_init(&buf, 64);
 }
 
@@ -71,7 +75,7 @@ ActionBuilder::SetRegLoad16(mf_field_id regId, uint16_t regValue) {
     struct ofpact_set_field *load = ofpact_put_reg_load(&buf);
     load->field = &mf_fields[(int)regId];
     load->value.be16 = htons(regValue);
-    load->mask.be16 = 0xffff;
+    load->mask.be16 = ~((uint16_t)0);
 }
 
 void
@@ -79,7 +83,15 @@ ActionBuilder::SetRegLoad(mf_field_id regId, uint32_t regValue) {
     struct ofpact_set_field *load = ofpact_put_reg_load(&buf);
     load->field = &mf_fields[(int)regId];
     load->value.be32 = htonl(regValue);
-    load->mask.be32 = 0xffffffff;
+    load->mask.be32 = ~((uint32_t)0);
+}
+
+void
+ActionBuilder::SetRegLoad64(mf_field_id regId, uint64_t regValue) {
+    struct ofpact_set_field *load = ofpact_put_reg_load(&buf);
+    load->field = &mf_fields[(int)regId];
+    load->value.be64 = htonll(regValue);
+    load->mask.be64 = ~((uint64_t)0);
 }
 
 void
@@ -102,18 +114,55 @@ ActionBuilder::SetRegMove(mf_field_id srcRegId, mf_field_id dstRegId) {
 }
 
 void
+ActionBuilder::SetWriteMetadata(uint64_t metadata, uint64_t mask) {
+    struct ofpact_metadata* meta = ofpact_put_WRITE_METADATA(&buf);
+    meta->metadata = htonll(metadata);
+    meta->mask = htonll(mask);
+}
+
+void
 ActionBuilder::SetEthSrcDst(const uint8_t *srcMac, const uint8_t *dstMac) {
     if (srcMac) {
         struct ofpact_set_field *sf = ofpact_put_SET_FIELD(&buf);
         sf->field = &mf_fields[MFF_ETH_SRC];
         memcpy(&(sf->value.mac), srcMac, ETH_ADDR_LEN);
         memset(&(sf->mask.mac), 0xff, ETH_ADDR_LEN);
+        sf->flow_has_vlan = flowHasVlan;
     }
     if (dstMac) {
         struct ofpact_set_field *sf = ofpact_put_SET_FIELD(&buf);
         sf->field = &mf_fields[MFF_ETH_DST];
         memcpy(&(sf->value.mac), dstMac, ETH_ADDR_LEN);
         memset(&(sf->mask.mac), 0xff, ETH_ADDR_LEN);
+        sf->flow_has_vlan = flowHasVlan;
+    }
+}
+
+void
+ActionBuilder::SetIpSrc(const address& srcIp) {
+    if (srcIp.is_v4()) {
+        struct ofpact_ipv4 *set = ofpact_put_SET_IPV4_SRC(&buf);
+        set->ipv4 = htonl(srcIp.to_v4().to_ulong());
+    } else {
+        struct ofpact_set_field *sf = ofpact_put_SET_FIELD(&buf);
+        sf->field = &mf_fields[MFF_IPV6_SRC];
+        memcpy(&(sf->value.ipv6), srcIp.to_v6().to_bytes().data(),
+               sizeof(sf->value.ipv6));
+        memset(&(sf->mask.ipv6), 0xff, sizeof(sf->mask.ipv6));
+    }
+}
+
+void
+ActionBuilder::SetIpDst(const address& dstIp) {
+    if (dstIp.is_v4()) {
+        struct ofpact_ipv4 *set = ofpact_put_SET_IPV4_DST(&buf);
+        set->ipv4 = htonl(dstIp.to_v4().to_ulong());
+    } else {
+        struct ofpact_set_field *sf = ofpact_put_SET_FIELD(&buf);
+        sf->field = &mf_fields[MFF_IPV6_DST];
+        memcpy(&(sf->value.ipv6), dstIp.to_v6().to_bytes().data(),
+               sizeof(sf->value.ipv6));
+        memset(&(sf->mask.ipv6), 0xff, sizeof(sf->mask.ipv6));
     }
 }
 
@@ -134,6 +183,13 @@ ActionBuilder::SetGotoTable(uint8_t tableId) {
 }
 
 void
+ActionBuilder::SetResubmit(uint32_t inPort, uint8_t tableId) {
+    struct ofpact_resubmit *resubmit = ofpact_put_RESUBMIT(&buf);
+    resubmit->in_port = inPort;
+    resubmit->table_id = tableId;
+}
+
+void
 ActionBuilder::SetOutputToPort(uint32_t port) {
     struct ofpact_output *output = ofpact_put_OUTPUT(&buf);
     output->port = port;
@@ -142,6 +198,7 @@ ActionBuilder::SetOutputToPort(uint32_t port) {
 void
 ActionBuilder::SetOutputReg(mf_field_id srcRegId) {
     struct ofpact_output_reg *outputReg = ofpact_put_OUTPUT_REG(&buf);
+    outputReg->max_len = UINT16_MAX;
     assert(outputReg->ofpact.raw == (uint8_t)(-1));
     InitSubField(&outputReg->src, srcRegId);
 }
@@ -154,20 +211,22 @@ ActionBuilder::SetGroup(uint32_t groupId) {
 
 void
 ActionBuilder::SetController(uint16_t max_len) {
-    struct ofpact_controller *contr = ofpact_put_CONTROLLER(&buf);
+    struct ofpact_output *contr = ofpact_put_OUTPUT(&buf);
+    contr->port = OFPP_CONTROLLER;
     contr->max_len = max_len;
-    contr->controller_id = 0;
-    contr->reason = OFPR_ACTION;
 }
 
 void
 ActionBuilder::SetPushVlan() {
     ofpact_put_PUSH_VLAN(&buf);
+    flowHasVlan = true;
 }
 
 void
 ActionBuilder::SetPopVlan() {
-    ofpact_put_STRIP_VLAN(&buf);
+    /* ugly hack to avoid the fact that there's no way in the API to
+       make a pop vlan action */
+    ofpact_put_STRIP_VLAN(&buf)->ofpact.raw = 8;
 }
 
 void

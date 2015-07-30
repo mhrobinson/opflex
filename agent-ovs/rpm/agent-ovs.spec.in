@@ -6,12 +6,14 @@
 # and is available at http://www.eclipse.org/legal/epl-v10.html
 #
 
+%{!?packageversion:%define packageversion @VERSION@}
+%{!?buildversion:%define buildversion @BVERSION@}
 %global _hardened_build 1
 
 Name: agent-ovs
 Epoch:   1
-Version: @VERSION@
-Release: @BVERSION@%{?dist}
+Version: %{packageversion}
+Release: %{buildversion}%{?dist}
 Summary: Agent for integrating group-based policy with Open vSwitch
 
 Group: System Environment/Daemons
@@ -20,8 +22,8 @@ URL: https://wiki.opendaylight.org/view/OpFlex:Main
 
 BuildRoot: %{_tmppath}/%{name}-%{version}-root
 Source: %{name}-%{version}.tar.gz
-Requires: libopflex >= 0.1.0
-Requires: libmodelgbp >= 1.0.0
+Requires: libopflex >= %{version}
+Requires: libmodelgbp >= %{version}
 Requires: boost >= 1.53
 Requires: boost-program-options
 Requires: boost-system
@@ -34,6 +36,8 @@ BuildRequires: libmodelgbp-devel
 BuildRequires: boost-devel
 BuildRequires: boost-test
 BuildRequires: openvswitch-devel
+BuildRequires: doxygen
+BuildRequires: systemd-units
 Requires(pre): shadow-utils
 Requires(post): systemd-units
 Requires(preun): systemd-units
@@ -112,11 +116,13 @@ getent group opflexep >/dev/null || groupadd -r opflexep
 %endif
 
 %files
+%defattr(-,root,root)
 %{_bindir}/agent_ovs
+%{_bindir}/gbp_inspect
 %config(noreplace) %{_sysconfdir}/opflex-agent-ovs/opflex-agent-ovs.conf
 %{_unitdir}/agent-ovs.service
 %{_sysctldir}/90-agent-ovs-sysctl.conf
-%dir %attr(0755, root, opflexep) %{_localstatedir}/lib/opflex-agent-ovs/endpoints
+%dir %attr(0775, root, opflexep) %{_localstatedir}/lib/opflex-agent-ovs/endpoints
 %dir %{_localstatedir}/lib/opflex-agent-ovs/ids
 
 %changelog

@@ -11,7 +11,6 @@
 #  include <config.h>
 #endif
 
-
 #include <yajr/rpc/gen/echo.hpp>
 #include <yajr/rpc/internal/json_stream_wrappers.hpp>
 #include <yajr/rpc/message_factory.inl.hpp>
@@ -24,6 +23,41 @@
 #include <cctype>
 
 namespace yajr {
+    namespace internal {
+        bool __checkInvariants(void const * cP) {
+            return static_cast< comms::internal::CommunicationPeer const * >(cP)
+                ->__checkInvariants();
+        }
+
+        bool isLegitPunct(int c) {
+
+            switch(c) {
+                case '\0':
+                case  ' ':
+                case  '"':
+                case  '%':
+                case  ',':
+                case  '-':
+                case  '.':
+                case  '/':
+                case  ':':
+                case  '[':
+                case  ']':
+                case  '_':
+                case  '{':
+                case  '|':
+                case  '}':
+                    return true;
+                default:
+                    return (
+                        (c & 0xe0)             // ASCII from 1 to 31 are BAD
+                    &&
+                        std::isalnum(c)        // alphanumeric values are GOOD
+                    );
+            }
+
+        }
+    }
     namespace comms {
         namespace internal {
 
@@ -87,9 +121,6 @@ void CommunicationPeer::onConnect() {
     connected_ = 1;
     status_ = internal::Peer::kPS_ONLINE;
 
- // /* start with a NULL byte */
- // delimitFrame();
-
     keepAliveTimer_.data = this;
     VLOG(1)
         << this
@@ -122,13 +153,13 @@ void CommunicationPeer::onDisconnect(bool now) {
     ;
 
  // if (connected_ || now) {
-        if (!uv_is_closing((uv_handle_t*)&handle_)) {
+        if (!uv_is_closing((uv_handle_t*)getHandle())) {
             VLOG(2)
                 << this
                 << " issuing close for tcp handle"
             ;
-            uv_close((uv_handle_t*)&handle_, on_close);
-         // uv_close((uv_handle_t*)&handle_, connected_? on_close : NULL);
+            uv_close((uv_handle_t*)getHandle(), on_close);
+         // uv_close((uv_handle_t*)getHandle(), connected_? on_close : NULL);
         }
  // }
 
@@ -152,7 +183,7 @@ void CommunicationPeer::onDisconnect(bool now) {
         if (!uv_is_closing((uv_handle_t*)&keepAliveTimer_)) {
             uv_close((uv_handle_t*)&keepAliveTimer_, on_close);
         }
-     // uv_close((uv_handle_t*)&handle_, on_close);
+     // uv_close((uv_handle_t*)getHandle(), on_close);
 
         /* FIXME: might be called too many times? */
         connectionHandler_(this, data_, ::yajr::StateChange::DISCONNECT, 0);
@@ -200,7 +231,7 @@ void CommunicationPeer::onDisconnect(bool now) {
     if (!uv_is_closing((uv_handle_t*)&keepAliveTimer_)) {
         uv_close((uv_handle_t*)&keepAliveTimer_, on_close);
     }
- // uv_close((uv_handle_t*)&handle_, on_close);
+ // uv_close((uv_handle_t*)getHandle(), on_close);
 
     unlink();
 
@@ -245,7 +276,7 @@ int CommunicationPeer::tcpInit() {
 
     int rc;
 
-    if ((rc = uv_tcp_init(getUvLoop(), &handle_))) {
+    if ((rc = uv_tcp_init(getUvLoop(), reinterpret_cast<uv_tcp_t *>(getHandle())))) {
         LOG(WARNING)
             << "uv_tcp_init: ["
             << uv_err_name(rc)
@@ -258,7 +289,7 @@ int CommunicationPeer::tcpInit() {
  // LOG(DEBUG) << "{" << this << "}AP up() for a tcp init";
  // up();
 
-    if ((rc = uv_tcp_keepalive(&handle_, 1, 60))) {
+    if ((rc = uv_tcp_keepalive(reinterpret_cast<uv_tcp_t *>(getHandle()), 1, 60))) {
         LOG(WARNING)
             << "uv_tcp_keepalive: ["
             << uv_err_name(rc)
@@ -267,7 +298,7 @@ int CommunicationPeer::tcpInit() {
         ;
     }
 
-    if ((rc = uv_tcp_nodelay(&handle_, 1))) {
+    if ((rc = uv_tcp_nodelay(reinterpret_cast<uv_tcp_t *>(getHandle()), 1))) {
         LOG(WARNING)
             << "uv_tcp_nodelay: ["
             << uv_err_name(rc)
@@ -378,6 +409,7 @@ void CommunicationPeer::readBufferZ(char const * buffer, size_t nread) const {
 }
 
 void CommunicationPeer::dumpIov(std::stringstream & dbgLog, std::vector<iovec> const & iov) {
+    dbgLog << "DUMP_IOV\n";
     for (size_t i=0; i < iov.size(); ++i) {
         iovec const & j = iov[i];
         dbgLog
@@ -394,8 +426,52 @@ void CommunicationPeer::dumpIov(std::stringstream & dbgLog, std::vector<iovec> c
     }
 }
 
+
+std::ostream& operator << (
+        std::ostream& os,
+        std::vector<iovec> const & iov) {
+
+    os << "INLINE_DUMP\n";
+
+    for (size_t i = 0; i < iov.size(); ++i) {
+
+        os
+            << "("
+            << i
+            << "@"
+            << std::hex
+            << iov[i].iov_base
+            << std::dec
+            << "+"
+            << iov[i].iov_len
+        ;
+
+        if (VLOG_IS_ON(7)) {
+            size_t len = iov[i].iov_len;
+            size_t offset = 0;
+            std::string temp((const char*)iov[i].iov_base, len);
+
+            do {
+                os
+                    << "("
+                    << temp.c_str() + offset
+                    << ")"
+                    ;
+                offset += strlen(temp.c_str()) + 1;
+            } while (len > offset);
+        }
+
+        os << ")";
+
+    }
+}
+
 #ifndef NDEBUG
 void CommunicationPeer::logDeque() const {
+
+    if (!VLOG_IS_ON(7)) {
+        return;
+    }
 
     std::stringstream dbgLog;
 
@@ -409,21 +485,22 @@ void CommunicationPeer::logDeque() const {
             << "\n IOV Pending:"
         ;
         dumpIov(dbgLog,
-            more::get_iovec(
-                s_.deque_.begin(),
-                s_.deque_.begin() + pendingBytes_,
-                std::forward_iterator_tag()
-            )
-        );
+                get_iovec(
+                    s_.deque_.begin(),
+                    s_.deque_.begin() + pendingBytes_
+                    )
+               );
     }
 
     dbgLog
         << "\n IOV Full:"
     ;
-    dumpIov(dbgLog, more::get_iovec(
+    dumpIov(dbgLog,
+            get_iovec(
                 s_.deque_.begin(),
-                s_.deque_.end(),
-                std::forward_iterator_tag()));
+                s_.deque_.end()
+                )
+           );
 
     VLOG(7)
         << dbgLog.str()
@@ -484,7 +561,7 @@ int CommunicationPeer::writeIOV(std::vector<iovec>& iov) const {
     int rc;
     if ((rc = uv_write(
                     &write_req_,
-                    (uv_stream_t*) &handle_,
+                    (uv_stream_t*) getHandle(),
                     (uv_buf_t*)&iov[0],
                     iov.size(),
                     on_write))) {
@@ -514,7 +591,7 @@ bool EchoGen::operator () (rpc::SendHandler & handler) {
         return false;
     }
 
-#ifndef NDEBUG
+#if 0
     for(size_t i = 0; i < kNcanaries; ++i) {
         if (!handler.String(canary)) {
             LOG(ERROR)
@@ -555,8 +632,8 @@ void CommunicationPeer::timeout() {
         <<   rtt
         << " keepAliveInterval_: "
         <<   keepAliveInterval_
-        <<                          " handle_.flags: "
-        << reinterpret_cast< void * >(handle_.flags)
+        <<                          " getHandle()->flags: "
+        << reinterpret_cast< void * >(getHandle()->flags)
     ;
 
     if (uvRefCnt_ == 1) {
@@ -588,8 +665,8 @@ void CommunicationPeer::timeout() {
 
         /* close the connection and hope for the best */
         onDisconnect();
-     // if (!uv_is_closing((uv_handle_t*)&handle_)) {
-     //     uv_close((uv_handle_t*)&handle_, on_close);
+     // if (!uv_is_closing((uv_handle_t*)getHandle())) {
+     //     uv_close((uv_handle_t*)getHandle(), on_close);
      // }
 
         return;
@@ -602,7 +679,7 @@ void CommunicationPeer::timeout() {
     ;
 
     sendEchoReq();
-#ifndef NDEBUG
+#if 0
     /* generate even more traffic */
     sendEchoReq();
     sendEchoReq();
@@ -629,7 +706,7 @@ int comms::internal::CommunicationPeer::choke() const {
 
     int rc;
 
-    if ((rc = uv_read_stop((uv_stream_t*) &handle_))) {
+    if ((rc = uv_read_stop((uv_stream_t*) getHandle()))) {
 
         LOG(WARNING)
             << "uv_read_stop: ["
@@ -673,7 +750,7 @@ int comms::internal::CommunicationPeer::unchoke() const {
     int rc;
 
     if ((rc = uv_read_start(
-                    (uv_stream_t*) &handle_,
+                    (uv_stream_t*) getHandle(),
                     transport_.callbacks_->allocCb_,
                     transport_.callbacks_->onRead_)
     )) {
@@ -720,6 +797,8 @@ yajr::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() con
 
     yajr::comms::internal::wrapper::IStreamWrapper is(ssIn_);
 
+    docIn_.GetAllocator().Clear();
+
     docIn_.ParseStream(is);
     if (docIn_.HasParseError()) {
         rapidjson::ParseErrorCode e = docIn_.GetParseError();
@@ -755,35 +834,14 @@ yajr::rpc::InboundMessage * comms::internal::CommunicationPeer::parseFrame() con
     return ret;
 }
 
-static bool isLegitPunct(int c) {
-
-    switch(c) {
-      case '\0':      // <-- redundant
-      case  ' ':
-      case  '"':
-      case  '%':
-      case  ',':
-      case  '-':
-      case  '.':
-      case  '/':
-      case  ':':
-      case  '[':
-      case  ']':
-      case  '_':
-      case  '{':
-      case  '|':
-      case  '}':
-        return true;
-      default:
-        return false;
-    }
-
-}
-
 #ifndef NDEBUG
 bool CommunicationPeer::__checkInvariants() const {
 
     bool result = true;
+
+    if (!internal::Peer::__checkInvariants()) {
+        result = false;
+    }
 
     if (!!connected_ != !!(status_ == kPS_ONLINE)) {
         VLOG(7)  // should be an ERROR but we need to first clean things up
@@ -798,11 +856,11 @@ bool CommunicationPeer::__checkInvariants() const {
      // result = false;
     }
 
-    if (handle_.data != this) {
+    if (getHandle()->data != this) {
         LOG(ERROR)
             << this
-            << " handle_.data = "
-            <<   handle_.data
+            << " getHandle()->data = "
+            <<   getHandle()->data
             << " should be "
             << reinterpret_cast< void const * >(this)
         ;
@@ -810,12 +868,35 @@ bool CommunicationPeer::__checkInvariants() const {
         result = false;
     }
 
-    std::vector<iovec> iov =
-        more::get_iovec(s_.deque_.begin(),
-                s_.deque_.end(),
-                std::forward_iterator_tag());
+    ssize_t s1 = s_.deque_.size();
+    std::vector<iovec> iov = get_iovec(s_.deque_.begin(), s_.deque_.end());
+    ssize_t s2 = s_.deque_.size();
+
+    if (s1 != s2) {
+        LOG(ERROR)
+            << this
+            << " s1="
+            << s1
+            << " s2="
+            << s2
+        ;
+    }
 
     ssize_t delta = s_.deque_.size();
+    if (delta != s2) {
+        LOG(ERROR)
+            << this
+            << " s1="
+            << s1
+            << " s2="
+            << s2
+            << " delta="
+            << delta
+        ;
+    }
+    assert(delta == s2);
+    assert(delta == s1);
+    assert(s2 == s1);
 
  // if (status_ != kPS_ONLINE) {
     if (connected_) {
@@ -882,43 +963,13 @@ bool CommunicationPeer::__checkInvariants() const {
 
     }
 
-    std::stringstream iovec_dump;
-    for (size_t i = 0; i < iov.size(); ++i) {
-
-        iovec_dump
-            << "("
-            << i
-            << "@"
-            << std::hex
-            << iov[i].iov_base
-            << std::dec
-            << "+"
-            << iov[i].iov_len
+    if (VLOG_IS_ON(6)) {
+        // some sub-parts of this are only there at verbosity level 7 but we log at 6
+        VLOG(6)
+            << iov
         ;
 
-        if (VLOG_IS_ON(7)) {
-            size_t len = iov[i].iov_len;
-            size_t offset = 0;
-            std::string temp((const char*)iov[i].iov_base, len);
-
-            do {
-                iovec_dump
-                    << "("
-                    << temp.c_str() + offset
-                    << ")"
-                    ;
-                offset += strlen(temp.c_str()) + 1;
-            } while (len > offset);
-
-            iovec_dump << ")";
-        }
-
     }
-
-    // some sub-parts of this are only there at verbosity level 7 but we log at 6
-    VLOG(6)
-        << iovec_dump.str()
-    ;
 
     // loop again, because we want the above debug first, to be less confusing
     for (size_t i = 0; i < iov.size(); ++i) {
@@ -932,21 +983,9 @@ bool CommunicationPeer::__checkInvariants() const {
                 c < e
             ;
                 ++c
-            ) {
+        ) {
 
-            if (
-                    (!*c)                      // '\0' is OK
-                ||
-                    (
-                        (*c & 0xe0)            // ASCII from 1 to 31 are BAD
-                    &&
-                        (
-                            std::isalnum(*c)   // alphanumeric values are GOOD
-                        ||
-                            isLegitPunct(*c)    // {[","]} and similar are GOOD
-                        )
-                    )
-                ) {
+            if (::yajr::internal::isLegitPunct(*c)) {
 
                 continue;
             }
@@ -990,7 +1029,15 @@ bool CommunicationPeer::__checkInvariants() const {
             << iov.size()
             << " delta = "
             << delta
+            << " queue size = "
+            << s_.deque_.size()
         ;
+        if (!VLOG_IS_ON(6)) {
+            LOG(ERROR)
+                << "IOVECs: "
+                << iov
+            ;
+        }
 
         result = false;
 
@@ -1006,13 +1053,10 @@ bool CommunicationPeer::__checkInvariants() const {
         ;
     }
 
-    if (!internal::Peer::__checkInvariants()) {
-        result = false;
-    }
-
     return result;
 }
 
+#if 0
 char const EchoGen::canary[] =
                     "_01_qwertyuiopasdfghjklzxcvbnm"
                     "_02_QWERTYUIOPASDFGHJKLZXCVBNM"
@@ -1272,6 +1316,7 @@ char const EchoGen::canary[] =
                     "_16_QWERTYUIOPASDFGHJ"
 ;
 size_t const EchoGen::kNcanaries = 20;
+#endif
 #endif
 
 } // namespace internal

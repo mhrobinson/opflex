@@ -65,7 +65,7 @@ public:
     shared_ptr<BridgeDomain> bd0, bd1;
     shared_ptr<Subnets> subnetsfd0, subnetsfd1, subnetsbd0, subnetsbd1;
     shared_ptr<Subnet> subnetsfd0_1, subnetsfd0_2, subnetsfd1_1,
-        subnetsbd0_1, subnetsbd1_1;
+        subnetsbd0_1, subnetsbd1_1, subnet;
 
     shared_ptr<L24Classifier> classifier0;
     shared_ptr<L24Classifier> classifier1;
@@ -120,54 +120,56 @@ protected:
         subnetsfd0_2 = subnetsfd0->addGbpSubnet("subnetsfd0_2");
         subnetsfd0_2->setAddress("2001:db8::")
             .setPrefixLen(32);
-        subnetsfd0->addGbpSubnetsToNetworkRSrc()
-            ->setTargetFloodDomain(fd0->getURI());
+        fd0->addGbpForwardingBehavioralGroupToSubnetsRSrc()
+            ->setTargetSubnets(subnetsfd0->getURI());
+        rd0->addGbpRoutingDomainToIntSubnetsRSrc(subnetsfd0->getURI().toString());
 
         subnetsfd1 = space->addGbpSubnets("subnetsfd1");
         subnetsfd1_1 = subnetsfd0->addGbpSubnet("subnetsfd1_1");
         subnetsfd1_1->setAddress("10.20.45.0")
             .setPrefixLen(24)
             .setVirtualRouterIp("10.20.45.1");
-        subnetsfd1->addGbpSubnetsToNetworkRSrc()
-            ->setTargetFloodDomain(fd1->getURI());
+        fd1->addGbpForwardingBehavioralGroupToSubnetsRSrc()
+            ->setTargetSubnets(subnetsfd1->getURI());
+        rd0->addGbpRoutingDomainToIntSubnetsRSrc(subnetsfd1->getURI().toString());
 
         subnetsbd0 = space->addGbpSubnets("subnetsbd0");
         subnetsbd0_1 = subnetsbd0->addGbpSubnet("subnetsbd0_1");
-        subnetsbd0->addGbpSubnetsToNetworkRSrc()
-            ->setTargetBridgeDomain(bd0->getURI());
+        bd0->addGbpForwardingBehavioralGroupToSubnetsRSrc()
+            ->setTargetSubnets(subnetsbd0->getURI());
+        rd0->addGbpRoutingDomainToIntSubnetsRSrc(subnetsbd0->getURI().toString());
 
         subnetsbd1 = space->addGbpSubnets("subnetsbd1");
         subnetsbd1_1 = subnetsbd1->addGbpSubnet("subnetsbd1_1");
-        subnetsbd1->addGbpSubnetsToNetworkRSrc()
-            ->setTargetBridgeDomain(bd1->getURI());
+        bd1->addGbpForwardingBehavioralGroupToSubnetsRSrc()
+            ->setTargetSubnets(subnetsbd1->getURI());
+        rd0->addGbpRoutingDomainToIntSubnetsRSrc(subnetsbd1->getURI().toString());
 
         epg0 = space->addGbpEpGroup("epg0");
         epg0->addGbpEpGroupToNetworkRSrc()
-            ->setTargetSubnets(subnetsbd0->getURI());
+            ->setTargetBridgeDomain(bd0->getURI());
         epg0->addGbpeInstContext()->setEncapId(0xA0A);
 
         epg1 = space->addGbpEpGroup("epg1");
         epg1->addGbpEpGroupToNetworkRSrc()
-            ->setTargetSubnets(subnetsbd1->getURI());
+            ->setTargetBridgeDomain(bd1->getURI());
         epg1->addGbpeInstContext()->setEncapId(0xA0B);
 
         epg2 = space->addGbpEpGroup("epg2");
         epg2->addGbpEpGroupToNetworkRSrc()
-            ->setTargetSubnets(subnetsfd0->getURI());
+            ->setTargetFloodDomain(fd0->getURI());
         epg2->addGbpeInstContext()->setEncapId(0xD0A)
             .setMulticastGroupIP("224.5.1.1");
 
         epg3 = space->addGbpEpGroup("epg3");
         epg3->addGbpEpGroupToNetworkRSrc()
-            ->setTargetSubnets(subnetsfd1->getURI());
+            ->setTargetFloodDomain(fd1->getURI());
         epg3->addGbpeInstContext()->setEncapId(0xD0B);
 
         epg4 = space->addGbpEpGroup("epg4");
         epg4->addGbpeInstContext()->setEncapId(0xE0E);
         epg4->addGbpEpGroupToNetworkRSrc()
             ->setTargetRoutingDomain(rd0->getURI());
-
-        createPolicyObjects();
 
         mutator.commit();
 
@@ -211,6 +213,8 @@ protected:
     }
 
     void createPolicyObjects() {
+        Mutator mutator(framework, policyOwner);
+
         // deny action
         action1 = space->addGbpAllowDenyAction("action1");
 
@@ -304,6 +308,8 @@ protected:
             ->setTargetL24Classifier(classifier4->getURI());
         epg0->addGbpEpGroupToProvContractRSrc(con3->getURI().toString());
         epg1->addGbpEpGroupToConsContractRSrc(con3->getURI().toString());
+
+        mutator.commit();
     }
 };
 

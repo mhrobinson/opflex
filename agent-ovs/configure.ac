@@ -12,7 +12,7 @@
 # ---------------------------------------------------------------
 # Initialization
 
-AC_INIT([agent-ovs], [1.0.0])
+AC_INIT([agent-ovs], [1.1.0])
 AC_SUBST(MODULE_NAME, ["Group-based Policy Agent for OVS"])
 
 # initialize automake and libtool
@@ -29,8 +29,7 @@ m4_include([m4/ax_boost_thread.m4])
 m4_include([m4/ax_boost_system.m4])
 m4_include([m4/ax_boost_date_time.m4])
 m4_include([m4/ax_boost_filesystem.m4])
-m4_include([m4/ax_boost_log.m4])
-m4_include([m4/ax_boost_log_setup.m4])
+m4_include([m4/ax_boost_iostreams.m4])
 m4_include([m4/ax_boost_asio.m4])
 m4_include([m4/ax_boost_random.m4])
 
@@ -98,15 +97,17 @@ AX_BOOST_FILESYSTEM
 if test "x$ax_cv_boost_filesystem" != xyes; then
    AC_MSG_ERROR([Boost::Filesystem library is required])
 fi
+AX_BOOST_IOSTREAMS
+if test "x$ax_cv_boost_iostreams" != xyes; then
+   AC_MSG_ERROR([Boost::IOStreams library is required])
+fi
 AX_BOOST_ASIO
 if test "x$ax_cv_boost_asio" != xyes; then
    AC_MSG_ERROR([Boost::ASIO library is required])
 fi
-AX_BOOST_LOG
-AX_BOOST_LOG_SETUP
 
-PKG_CHECK_MODULES([libopflex], [libopflex >= 0.1.0])
-PKG_CHECK_MODULES([libmodelgbp], [libmodelgbp >= 0.1.0])
+PKG_CHECK_MODULES([libopflex], [libopflex >= 1.1.0])
+PKG_CHECK_MODULES([libmodelgbp], [libmodelgbp >= 1.1.0])
 
 # check for libopenvswitch
 PKG_CHECK_MODULES([libofproto], [libofproto >= 2.3.90])

@@ -20,6 +20,10 @@
 
 #include <uv.h>
 
+#ifndef NDEBUG
+# include <unistd.h>
+#endif
+
 namespace {
 
     void prepareAgainCB(uv_timer_t *) { VLOG(6); }
@@ -72,10 +76,10 @@ void internal::Peer::LoopData::onPrepareLoop() {
 
     uint64_t now = uv_now(prepare_.loop);
 
-    peers[TO_RESOLVE]
+    peers[TO_LISTEN]
         .clear_and_dispose(RetryPeer());
 
-    peers[TO_LISTEN]
+    peers[TO_RESOLVE]
         .clear_and_dispose(RetryPeer());
 
 #ifndef NDEBUG
@@ -184,6 +188,9 @@ void internal::Peer::LoopData::destroy(bool now) {
 
 std::ostream& operator << (std::ostream& os, Peer::LoopData const * lD) {
     return os
+#ifndef NDEBUG
+        << getpid()
+#endif
         << "{"
         << reinterpret_cast<void const *>(lD)
         << "}"
@@ -306,7 +313,7 @@ void Peer::LoopData::down() {
             << this
             << " walking uv_loop before stopping it"
         ;
-        uv_walk(prepare_.loop, walkAndDumpHandlesCb< ERROR >, this);
+        uv_walk(prepare_.loop, walkAndDumpHandlesCb< DEBUG >, this);
 
         CloseHandle closeHandle = { this, NULL };
 

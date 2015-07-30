@@ -19,8 +19,6 @@
 
 #include <sys/uio.h>
 
-#include <iovec-utils.hh>
-
 namespace yajr {
     namespace transport {
 
@@ -44,7 +42,7 @@ int Cb< PlainText >::send_cb(CommunicationPeer const * peer) {
 
     if (!peer->pendingBytes_) {
         /* great success! */
-        VLOG(3)
+        VLOG(4)
             << "Nothing left to be sent!"
         ;
 
@@ -52,10 +50,9 @@ int Cb< PlainText >::send_cb(CommunicationPeer const * peer) {
     }
 
     std::vector<iovec> iov =
-        more::get_iovec(
+        ::yajr::comms::internal::get_iovec(
                 peer->s_.deque_.begin(),
-                peer->s_.deque_.end(),
-                std::forward_iterator_tag()
+                peer->s_.deque_.end()
         );
 
     assert (iov.size());
