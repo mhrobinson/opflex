@@ -9,11 +9,13 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <opflex/modb/URI.h>
-
 #pragma once
 #ifndef OVSAGENT_ENDPOINTLISTENER_H
 #define OVSAGENT_ENDPOINTLISTENER_H
+
+#include <opflex/modb/URI.h>
+
+#include <string>
 
 namespace ovsagent {
 
@@ -39,8 +41,36 @@ public:
      * @param uuid the UUID for the endpoint
      */
     virtual void endpointUpdated(const std::string& uuid) = 0;
+
+    /**
+     * A set of URIs
+     */
+    typedef std::set<opflex::modb::URI> uri_set_t;
+
+    /**
+     * Called when a set of security groups is added or removed
+     *
+     * @param secGroups the set of security groups that has been
+     * modified
+     */
+    virtual void secGroupSetUpdated(const uri_set_t& secGroups) {}
 };
 
 } /* namespace ovsagent */
+
+namespace std {
+/**
+ * Template specialization for std::hash<ovsagent::EndpointListener::uri_set_t>
+ */
+template<> struct hash<ovsagent::EndpointListener::uri_set_t> {
+    /**
+     * Hash the ovsagent::EndpointListener::uri_set_t
+     */
+    std::size_t operator()(const ovsagent::EndpointListener::uri_set_t& u) const {
+        return boost::hash_value(u);
+    }
+};
+} /* namespace std */
+
 
 #endif /* OVSAGENT_ENDPOINTMANAGER_H */

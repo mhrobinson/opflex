@@ -51,20 +51,27 @@ public class FConfigureAC
     {
         String lModuleName = Config.getProjName();
         String lLibName = Config.getLibName();
+        String lLibVersion = Config.getLibVersion();
+        String lLibtoolVersion = Config.getLibtoolVersion();
 
-        out.println(FORMAT.replaceAll("_MODULE_NAME_", lModuleName).replaceAll("_LIB_NAME_", lLibName));
+        out.println(FORMAT.replaceAll("_MODULE_NAME_", lModuleName)
+                    .replaceAll("_LIB_NAME_", lLibName)
+                    .replaceAll("_LIB_VERSION_", lLibVersion)
+                    .replaceAll("_LIBTOOL_VERSION_", lLibtoolVersion));
     }
 
     public static final String FORMAT = "#\n" + "# Process this file with autoconf to produce a configure script\n"
                                         + "#\n" + "# If you just want to start a build from source control, run\n"
                                         + "# autogen.sh first.\n" + "#\n" + "\n"
                                         + "# ---------------------------------------------------------------\n"
-                                        + "# Initialization\n" + "\n" + "AC_INIT([_LIB_NAME_], [1.1.0])\n"
-                                        + "AC_SUBST(MODEL_NAME, [\"_MODULE_NAME_ Generated OpFlex Model\"])\n" + "\n"
+                                        + "# Initialization\n" + "\n" + "AC_INIT([_LIB_NAME_], [_LIB_VERSION_])\n"
+                                        + "AC_SUBST(MODEL_NAME, [\"_MODULE_NAME_ Generated OpFlex Model\"])\n"
+                                        + "AC_SUBST(VERSION_INFO, [_LIBTOOL_VERSION_])\n" + "\n"
                                         + "# initialize automake and libtool\n" + "AM_INIT_AUTOMAKE([subdir-objects])\n"
                                         + "AM_CONFIG_HEADER(config.h)\n" + "LT_INIT()\n" + "AC_PROG_LIBTOOL\n"
                                         + "AC_CONFIG_MACRO_DIR([m4])\n" + "\n"
                                         + "m4_include([m4/ax_boost_base.m4])\n"
+                                        + "m4_include([m4/ax_cxx_compile_stdcxx.m4])\n"
                                         + "# ---------------------------------------------------------------\n"
                                         + "# Configuration options\n"
                                         + "# Modify the release/build version\n"
@@ -80,6 +87,7 @@ public class FConfigureAC
                                         + "# Environment introspection\n" + "\n" + "# check for compiler\n"
                                         + "AC_PROG_CC\n" + "AC_PROG_CXX\n" + "AC_PROG_INSTALL\n" + "AM_PROG_AS\n"
                                         + "AC_LANG([C++])\n" + "\n" + "# check for doxygen\n"
+                                        + "AX_CXX_COMPILE_STDCXX([11], [noext], [optional])\n"
                                         + "AC_CHECK_PROGS(DOXYGEN,doxygen,none)\n"
                                         + "AM_CONDITIONAL(HAVE_DOXYGEN, [test x$DOXYGEN != 'xnone']) \n" + "\n"
                                         + "# ---------------------------------------------------------------\n"
@@ -92,8 +100,10 @@ public class FConfigureAC
                                         + "\tAC_SUBST(docdir, ['${prefix}/share/doc/'$PACKAGE])\n" + "fi\n" + "\n"
                                         + "# ---------------------------------------------------------------\n"
                                         + "# Output\n" + "\n" + "AC_CONFIG_FILES([\\\n" + "\tMakefile \\\n"
-                                        + "\trpm/_LIB_NAME_.spec \\\n" + "\t_LIB_NAME_.pc \\\n" 
-                                        + "\tdoc/Doxyfile])\n" + "AC_OUTPUT\n" + "\n" + "AC_MSG_NOTICE([\n"
+                                        + "\tdebian/changelog \\\n" + "\trpm/_LIB_NAME_.spec \\\n"
+                                        + "\t_LIB_NAME_.pc \\\n" + "\tdoc/Doxyfile])\n"
+                                        + "AC_CONFIG_FILES([debian/rules], [chmod +x debian/rules])\n"
+                                        + "AC_OUTPUT\n" + "\n" + "AC_MSG_NOTICE([\n"
                                         + "======================================================================\n"
                                         + "Configuration complete\n" + "\n"
                                         + "You may now compile the software by running 'make'\n"

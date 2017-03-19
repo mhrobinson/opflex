@@ -9,25 +9,29 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <boost/foreach.hpp>
-
 #include "logging.h"
 #include "StatsManager.h"
 #include "Agent.h"
-#include "ovs.h"
+
+#include "ovs-ofputil.h"
+
+#include <lib/util.h>
+extern "C" {
+#include <openvswitch/ofp-msgs.h>
+}
 
 namespace ovsagent {
 
 using boost::asio::deadline_timer;
 using boost::asio::placeholders::error;
 using boost::posix_time::milliseconds;
-using boost::bind;
+using std::bind;
 using boost::system::error_code;
 
 StatsManager::StatsManager(Agent* agent_, PortMapper& portMapper_,
                            long timer_interval_)
-    : agent(agent_), portMapper(portMapper_),
-      agent_io(agent_->getAgentIOService()), 
+    : agent(agent_), portMapper(portMapper_), connection(NULL),
+      agent_io(agent_->getAgentIOService()),
       timer_interval(timer_interval_), stopping(false) {
 
 }
@@ -54,7 +58,9 @@ void StatsManager::stop() {
     LOG(DEBUG) << "Stopping stats manager";
     stopping = true;
 
-    connection->UnregisterMessageHandler(OFPTYPE_PORT_STATS_REPLY, this);
+    if (connection) {
+        connection->UnregisterMessageHandler(OFPTYPE_PORT_STATS_REPLY, this);
+    }
 
     if (timer) {
         timer->cancel();
@@ -69,9 +75,8 @@ void StatsManager::on_timer(const error_code& ec) {
     }
 
     // send port stats request
-    struct ofpbuf *portStatsReq = 
-        ofputil_encode_dump_ports_request(connection->GetProtocolVersion(),
-                                          OFPP_ANY);
+    struct ofpbuf *portStatsReq = ofputil_encode_dump_ports_request(
+        (ofp_version)connection->GetProtocolVersion(), OFPP_ANY);
     int err = connection->SendMessage(portStatsReq);
     if (err != 0) {
         LOG(ERROR) << "Failed to send port statistics request: "
@@ -85,11 +90,11 @@ void StatsManager::on_timer(const error_code& ec) {
 }
 
 
-void StatsManager::Handle(SwitchConnection *conn, 
-                          ofptype msgType, ofpbuf *msg) {
+void StatsManager::Handle(SwitchConnection*,
+                          int msgType, ofpbuf *msg) {
     assert(msgType == OFPTYPE_PORT_STATS_REPLY);
 
-    const struct ofp_header *oh = (ofp_header *)ofpbuf_data(msg);
+    const struct ofp_header *oh = (ofp_header *)msg->data;
     struct ofputil_port_stats ps;
     struct ofpbuf b;
 
@@ -107,7 +112,7 @@ void StatsManager::Handle(SwitchConnection *conn,
         counters.rxDrop = ps.stats.rx_dropped;
 
         EndpointManager& epMgr = agent->getEndpointManager();
-        boost::unordered_set<std::string> endpoints;
+        std::unordered_set<std::string> endpoints;
         try {
             const std::string& portName = portMapper.FindPort(ps.port_no);
             epMgr.getEndpointsByIface(portName, endpoints);
@@ -115,7 +120,7 @@ void StatsManager::Handle(SwitchConnection *conn,
             // port not known yet
         }
 
-        BOOST_FOREACH(const std::string& uuid, endpoints) {
+        for (const std::string& uuid : endpoints) {
             epMgr.updateEndpointCounters(uuid, counters);
         }
     }

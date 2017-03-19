@@ -11,7 +11,11 @@
 #ifndef OVSAGENT_TEST_MODBFIXTURE_H_
 #define OVSAGENT_TEST_MODBFIXTURE_H_
 
-#include <boost/shared_ptr.hpp>
+#include "BaseFixture.h"
+#include "EndpointSource.h"
+#include "ServiceSource.h"
+#include "EndpointManager.h"
+
 #include <modelgbp/dmtree/Root.hpp>
 #include <modelgbp/l2/EtherTypeEnumT.hpp>
 #include <modelgbp/l4/TcpFlagsEnumT.hpp>
@@ -20,80 +24,85 @@
 #include <modelgbp/gbp/ConnTrackEnumT.hpp>
 #include <opflex/modb/Mutator.h>
 
-#include "BaseFixture.h"
-#include "EndpointSource.h"
-#include "EndpointManager.h"
+#include <memory>
 
-using namespace std;
-using namespace boost;
-using namespace ovsagent;
-using namespace modelgbp;
-using namespace modelgbp::gbp;
-using namespace modelgbp::gbpe;
-using namespace modelgbp::platform;
-using namespace opflex::modb;
+namespace ovsagent {
 
 class DummyEpSrc : public EndpointSource {
 public:
     DummyEpSrc(EndpointManager *manager)
         : EndpointSource(manager) { }
     virtual ~DummyEpSrc() { }
-    virtual void start() { }
-    virtual void stop() { }
+};
+class DummyServiceSrc : public ServiceSource {
+public:
+    DummyServiceSrc(ServiceManager *manager)
+        : ServiceSource(manager) { }
+    virtual ~DummyServiceSrc() { }
 };
 
 class ModbFixture : public BaseFixture {
 public:
     ModbFixture() : BaseFixture(),
                     epSrc(&agent.getEndpointManager()),
+                    servSrc(&agent.getServiceManager()),
                     policyOwner("policyreg") {
-        createObjects();
+        universe = modelgbp::policy::Universe::resolve(framework).get();
+        opflex::modb::Mutator mutator(framework, policyOwner);
+        space = universe->addPolicySpace("tenant0");
+        mutator.commit();
     }
 
     virtual ~ModbFixture() {
     }
 
     DummyEpSrc epSrc;
-    shared_ptr<policy::Universe> universe;
-    shared_ptr<policy::Space> space;
-    shared_ptr<Config> config;
-    shared_ptr<Endpoint> ep0, ep1, ep2, ep3, ep4;
-    shared_ptr<EpGroup> epg0, epg1, epg2, epg3, epg4;
-    shared_ptr<FloodDomain> fd0, fd1;
-    shared_ptr<FloodContext> fd0ctx;
-    shared_ptr<RoutingDomain> rd0;
-    shared_ptr<BridgeDomain> bd0, bd1;
-    shared_ptr<Subnets> subnetsfd0, subnetsfd1, subnetsbd0, subnetsbd1;
-    shared_ptr<Subnet> subnetsfd0_1, subnetsfd0_2, subnetsfd1_1,
-        subnetsbd0_1, subnetsbd1_1, subnet;
+    DummyServiceSrc servSrc;
+    std::shared_ptr<modelgbp::policy::Universe> universe;
+    std::shared_ptr<modelgbp::policy::Space> space;
+    std::shared_ptr<modelgbp::platform::Config> config;
+    std::shared_ptr<Endpoint> ep0, ep1, ep2, ep3, ep4;
+    std::shared_ptr<modelgbp::gbp::EpGroup> epg0, epg1, epg2, epg3, epg4;
+    std::shared_ptr<modelgbp::gbp::FloodDomain> fd0, fd1;
+    std::shared_ptr<modelgbp::gbpe::FloodContext> fd0ctx;
+    std::shared_ptr<modelgbp::gbp::RoutingDomain> rd0;
+    std::shared_ptr<modelgbp::gbp::BridgeDomain> bd0, bd1;
+    std::shared_ptr<modelgbp::gbp::Subnets> subnetsfd0, subnetsfd1,
+        subnetsbd0, subnetsbd1;
+    std::shared_ptr<modelgbp::gbp::Subnet> subnetsfd0_1, subnetsfd0_2,
+        subnetsfd1_1, subnetsbd0_1, subnetsbd1_1, subnet;
 
-    shared_ptr<L24Classifier> classifier0;
-    shared_ptr<L24Classifier> classifier1;
-    shared_ptr<L24Classifier> classifier2;
-    shared_ptr<L24Classifier> classifier3;
-    shared_ptr<L24Classifier> classifier4;
-    shared_ptr<L24Classifier> classifier5;
-    shared_ptr<L24Classifier> classifier6;
-    shared_ptr<L24Classifier> classifier7;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier0;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier1;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier2;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier3;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier4;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier5;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier6;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier7;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier8;
+    std::shared_ptr<modelgbp::gbpe::L24Classifier> classifier9;
 
-    shared_ptr<AllowDenyAction> action1;
+    std::shared_ptr<modelgbp::gbp::AllowDenyAction> action1;
 
-    shared_ptr<Contract> con1;
-    shared_ptr<Contract> con2;
-    shared_ptr<Contract> con3;
-    string policyOwner;
+    std::shared_ptr<modelgbp::gbp::Contract> con1;
+    std::shared_ptr<modelgbp::gbp::Contract> con2;
+    std::shared_ptr<modelgbp::gbp::Contract> con3;
+    std::string policyOwner;
 
 protected:
 
     void createObjects() {
-        /* create EPGs and forwarding objects */
-        universe = policy::Universe::resolve(framework).get();
+        using opflex::modb::Mutator;
+        using namespace modelgbp;
+        using namespace modelgbp::gbp;
+        using namespace modelgbp::gbpe;
 
+        /* create EPGs and forwarding objects */
         Mutator mutator(framework, policyOwner);
         config = universe->addPlatformConfig("default");
         config->setMulticastGroupIP("224.1.1.1");
 
-        space = universe->addPolicySpace("tenant0");
         fd0 = space->addGbpFloodDomain("fd0");
         fd1 = space->addGbpFloodDomain("fd1");
         fd1->setUnknownFloodMode(UnknownFloodModeEnumT::CONST_FLOOD);
@@ -114,12 +123,13 @@ protected:
 
         subnetsfd0 = space->addGbpSubnets("subnetsfd0");
         subnetsfd0_1 = subnetsfd0->addGbpSubnet("subnetsfd0_1");
-        subnetsfd0_1->setAddress("10.20.44.0")
+        subnetsfd0_1->setAddress("10.20.44.1")
             .setPrefixLen(24)
             .setVirtualRouterIp("10.20.44.1");
         subnetsfd0_2 = subnetsfd0->addGbpSubnet("subnetsfd0_2");
         subnetsfd0_2->setAddress("2001:db8::")
-            .setPrefixLen(32);
+            .setPrefixLen(32)
+            .setVirtualRouterIp("2001:db8::1");
         fd0->addGbpForwardingBehavioralGroupToSubnetsRSrc()
             ->setTargetSubnets(subnetsfd0->getURI());
         rd0->addGbpRoutingDomainToIntSubnetsRSrc(subnetsfd0->getURI().toString());
@@ -181,6 +191,8 @@ protected:
         ep0->addIP("10.20.44.3");
         ep0->addIP("2001:db8::2");
         ep0->addIP("2001:db8::3");
+        ep0->addAnycastReturnIP("10.20.44.2");
+        ep0->addAnycastReturnIP("2001:db8::2");
         ep0->setEgURI(epg0->getURI());
         epSrc.updateEndpoint(*ep0);
 
@@ -213,6 +225,11 @@ protected:
     }
 
     void createPolicyObjects() {
+        using opflex::modb::Mutator;
+        using namespace modelgbp;
+        using namespace modelgbp::gbp;
+        using namespace modelgbp::gbpe;
+
         Mutator mutator(framework, policyOwner);
 
         // deny action
@@ -221,6 +238,7 @@ protected:
         /* blank classifier */
         classifier0 = space->addGbpeL24Classifier("classifier0");
         classifier0->setOrder(10);
+
         /* allow bidirectional FCoE */
         classifier5 = space->addGbpeL24Classifier("classifier5");
         classifier5->setOrder(20).setEtherT(l2::EtherTypeEnumT::CONST_FCOE);
@@ -228,8 +246,13 @@ protected:
         /* allow TCP to dst port 80 cons->prov */
         classifier1 = space->addGbpeL24Classifier("classifier1");
         classifier1->setEtherT(l2::EtherTypeEnumT::CONST_IPV4)
-            .setProt(6 /* TCP */).setDFromPort(80)
-            .setConnectionTracking(ConnTrackEnumT::CONST_REFLEXIVE);
+            .setProt(6 /* TCP */).setDFromPort(80);
+
+        /* allow TCPv6 to dst port 80 cons->prov */
+        classifier8 = space->addGbpeL24Classifier("classifier8");
+        classifier8->setEtherT(l2::EtherTypeEnumT::CONST_IPV6)
+            .setProt(6 /* TCP */).setDFromPort(80);
+
         /* allow ARP from prov->cons */
         classifier2 = space->addGbpeL24Classifier("classifier2");
         classifier2->setEtherT(l2::EtherTypeEnumT::CONST_ARP);
@@ -242,12 +265,20 @@ protected:
             .setTcpFlags(l4::TcpFlagsEnumT::CONST_ACK |
                          l4::TcpFlagsEnumT::CONST_SYN);
 
-        /* allow SSH from port 22 with ACK+SYN */
+        /* allow SSH from port 22 with EST */
         classifier7 = space->addGbpeL24Classifier("classifier7");
         classifier7->setEtherT(l2::EtherTypeEnumT::CONST_IPV4)
             .setProt(6 /* TCP */)
             .setSFromPort(21)
             .setTcpFlags(l4::TcpFlagsEnumT::CONST_ESTABLISHED);
+
+        /* Allow 22 reflexive */
+        classifier9 = space->addGbpeL24Classifier("classifier9");
+        classifier9->setOrder(10)
+            .setEtherT(l2::EtherTypeEnumT::CONST_IPV4)
+            .setProt(6 /* TCP */)
+            .setDFromPort(22)
+            .setConnectionTracking(ConnTrackEnumT::CONST_REFLEXIVE);
 
         con1 = space->addGbpContract("contract1");
         con1->addGbpSubject("1_subject1")->addGbpRule("1_1_rule1")
@@ -312,5 +343,7 @@ protected:
         mutator.commit();
     }
 };
+
+} // namespace ovsagent
 
 #endif /* OVSAGENT_TEST_MODBFIXTURE_H_ */

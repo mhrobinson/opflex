@@ -10,35 +10,39 @@
  */
 
 #include <algorithm>
-#include <boost/foreach.hpp>
+
+#include <modelgbp/gbp/UnknownFloodModeEnumT.hpp>
+#include <modelgbp/gbp/RoutingModeEnumT.hpp>
+#include <modelgbp/gbp/DirectionEnumT.hpp>
 #include <opflex/modb/URIBuilder.h>
 
 #include "logging.h"
 #include "PolicyManager.h"
 #include "Packets.h"
+#include "FlowUtils.h"
 
 namespace ovsagent {
 
 using std::vector;
 using std::string;
+using std::shared_ptr;
+using std::make_shared;
+using std::unordered_set;
+using std::unique_lock;
+using std::lock_guard;
+using std::mutex;
 using opflex::modb::Mutator;
 using opflex::ofcore::OFFramework;
 using opflex::modb::class_id_t;
 using opflex::modb::URI;
 using opflex::modb::URIBuilder;
-using boost::unique_lock;
-using boost::lock_guard;
-using boost::mutex;
-using boost::shared_ptr;
-using boost::make_shared;
 using boost::optional;
-using boost::unordered_set;
 using boost::asio::ip::address;
 
 PolicyManager::PolicyManager(OFFramework& framework_)
     : framework(framework_), opflexDomain("default"),
       domainListener(*this), contractListener(*this),
-      configListener(*this) {
+      secGroupListener(*this), configListener(*this) {
 
 }
 
@@ -61,16 +65,23 @@ void PolicyManager::start() {
     RoutingDomain::registerListener(framework, &domainListener);
     Subnets::registerListener(framework, &domainListener);
     Subnet::registerListener(framework, &domainListener);
-    InstContext::registerListener(framework, &domainListener);
     EpGroup::registerListener(framework, &domainListener);
     L3ExternalNetwork::registerListener(framework, &domainListener);
 
     EpGroup::registerListener(framework, &contractListener);
+    L3ExternalNetwork::registerListener(framework, &contractListener);
     RoutingDomain::registerListener(framework, &contractListener);
     Contract::registerListener(framework, &contractListener);
     Subject::registerListener(framework, &contractListener);
     Rule::registerListener(framework, &contractListener);
     L24Classifier::registerListener(framework, &contractListener);
+
+    SecGroup::registerListener(framework, &secGroupListener);
+    SecGroupSubject::registerListener(framework, &secGroupListener);
+    SecGroupRule::registerListener(framework, &secGroupListener);
+    L24Classifier::registerListener(framework, &secGroupListener);
+    Subnets::registerListener(framework, &secGroupListener);
+    Subnet::registerListener(framework, &secGroupListener);
 
     // resolve platform config
     Mutator mutator(framework, "init");
@@ -94,21 +105,27 @@ void PolicyManager::stop() {
     RoutingDomain::unregisterListener(framework, &domainListener);
     Subnets::unregisterListener(framework, &domainListener);
     Subnet::unregisterListener(framework, &domainListener);
-    InstContext::unregisterListener(framework, &domainListener);
     EpGroup::unregisterListener(framework, &domainListener);
     L3ExternalNetwork::unregisterListener(framework, &domainListener);
 
     EpGroup::unregisterListener(framework, &contractListener);
+    L3ExternalNetwork::unregisterListener(framework, &contractListener);
     RoutingDomain::unregisterListener(framework, &contractListener);
     Contract::unregisterListener(framework, &contractListener);
     Subject::unregisterListener(framework, &contractListener);
     Rule::unregisterListener(framework, &contractListener);
     L24Classifier::unregisterListener(framework, &contractListener);
 
+    SecGroup::unregisterListener(framework, &secGroupListener);
+    SecGroupSubject::unregisterListener(framework, &secGroupListener);
+    SecGroupRule::unregisterListener(framework, &secGroupListener);
+    L24Classifier::unregisterListener(framework, &secGroupListener);
+    Subnets::unregisterListener(framework, &secGroupListener);
+    Subnet::unregisterListener(framework, &secGroupListener);
+
     lock_guard<mutex> guard(state_mutex);
     group_map.clear();
     vnid_map.clear();
-    subnet_ref_map.clear();
 }
 
 void PolicyManager::registerListener(PolicyListener* listener) {
@@ -123,28 +140,35 @@ void PolicyManager::unregisterListener(PolicyListener* listener) {
 
 void PolicyManager::notifyEPGDomain(const URI& egURI) {
     lock_guard<mutex> guard(listener_mutex);
-    BOOST_FOREACH(PolicyListener* listener, policyListeners) {
+    for (PolicyListener* listener : policyListeners) {
         listener->egDomainUpdated(egURI);
     }
 }
 
 void PolicyManager::notifyDomain(class_id_t cid, const URI& domURI) {
     lock_guard<mutex> guard(listener_mutex);
-    BOOST_FOREACH(PolicyListener* listener, policyListeners) {
+    for (PolicyListener* listener : policyListeners) {
         listener->domainUpdated(cid, domURI);
     }
 }
 
 void PolicyManager::notifyContract(const URI& contractURI) {
     lock_guard<mutex> guard(listener_mutex);
-    BOOST_FOREACH(PolicyListener *listener, policyListeners) {
+    for (PolicyListener *listener : policyListeners) {
         listener->contractUpdated(contractURI);
+    }
+}
+
+void PolicyManager::notifySecGroup(const URI& secGroupURI) {
+    lock_guard<mutex> guard(listener_mutex);
+    for (PolicyListener *listener : policyListeners) {
+        listener->secGroupUpdated(secGroupURI);
     }
 }
 
 void PolicyManager::notifyConfig(const URI& configURI) {
     lock_guard<mutex> guard(listener_mutex);
-    BOOST_FOREACH(PolicyListener *listener, policyListeners) {
+    for (PolicyListener *listener : policyListeners) {
         listener->configUpdated(configURI);
     }
 }
@@ -194,21 +218,21 @@ void PolicyManager::getSubnetsForGroup(const opflex::modb::URI& eg,
     lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return;
-    BOOST_FOREACH(const GroupState::subnet_map_t::value_type& v,
-                  it->second.subnet_map) {
+    for (const GroupState::subnet_map_t::value_type& v :
+             it->second.subnet_map) {
         subnets.push_back(v.second);
     }
 }
 
 optional<shared_ptr<modelgbp::gbp::Subnet> >
 PolicyManager::findSubnetForEp(const opflex::modb::URI& eg,
-                                const address& ip) {
+                               const address& ip) {
     lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     if (it == group_map.end()) return boost::none;
     boost::system::error_code ec;
-    BOOST_FOREACH(const GroupState::subnet_map_t::value_type& v,
-                  it->second.subnet_map) {
+    for (const GroupState::subnet_map_t::value_type& v :
+             it->second.subnet_map) {
         if (!v.second->isAddressSet() || !v.second->isPrefixLenSet())
             continue;
         address netAddr =
@@ -256,7 +280,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
 
     GroupState& gs = group_map[egURI];
 
-    optional<shared_ptr<EpGroup> > epg = 
+    optional<shared_ptr<EpGroup> > epg =
         EpGroup::resolve(framework, egURI);
     if (!epg) {
         toRemove = true;
@@ -271,7 +295,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
     }
     if (newInstCtx && newInstCtx.get()->getEncapId()) {
         vnid_map.insert(
-            std::make_pair(newInstCtx.get()->getEncapId().get(), egURI));
+                        std::make_pair(newInstCtx.get()->getEncapId().get(), egURI));
     }
 
     optional<shared_ptr<RoutingDomain> > newrd;
@@ -282,7 +306,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
 
     optional<class_id_t> domainClass;
     optional<URI> domainURI;
-    optional<shared_ptr<EpGroupToNetworkRSrc> > ref = 
+    optional<shared_ptr<EpGroupToNetworkRSrc> > ref =
         epg.get()->resolveGbpEpGroupToNetworkRSrc();
     if (ref) {
         domainClass = ref.get()->getTargetClass();
@@ -300,7 +324,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
         if (sns) {
             vector<shared_ptr<Subnet> > csns;
             sns.get()->resolveGbpSubnet(csns);
-            BOOST_FOREACH(shared_ptr<Subnet>& csn, csns)
+            for (shared_ptr<Subnet>& csn : csns)
                 newsmap[csn->getURI()] = csn;
         }
     }
@@ -328,7 +352,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
             {
                 newbd = BridgeDomain::resolve(framework, du);
                 if (newbd) {
-                    optional<shared_ptr<BridgeDomainToNetworkRSrc> > dref = 
+                    optional<shared_ptr<BridgeDomainToNetworkRSrc> > dref =
                         newbd.get()->resolveGbpBridgeDomainToNetworkRSrc();
                     if (dref) {
                         ndomainClass = dref.get()->getTargetClass();
@@ -343,7 +367,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
             {
                 newfd = FloodDomain::resolve(framework, du);
                 if (newfd) {
-                    optional<shared_ptr<FloodDomainToNetworkRSrc> > dref = 
+                    optional<shared_ptr<FloodDomainToNetworkRSrc> > dref =
                         newfd.get()->resolveGbpFloodDomainToNetworkRSrc();
                     if (dref) {
                         ndomainClass = dref.get()->getTargetClass();
@@ -366,7 +390,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
             if (sns) {
                 vector<shared_ptr<Subnet> > csns;
                 sns.get()->resolveGbpSubnet(csns);
-                BOOST_FOREACH(shared_ptr<Subnet>& csn, csns)
+                for (shared_ptr<Subnet>& csn : csns)
                     newsmap[csn->getURI()] = csn;
             }
         }
@@ -376,7 +400,8 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
     }
 
     bool updated = false;
-    if (newInstCtx != gs.instContext ||
+    if (epg != gs.epGroup ||
+        newInstCtx != gs.instContext ||
         newfd != gs.floodDomain ||
         newfdctx != gs.floodContext ||
         newbd != gs.bridgeDomain ||
@@ -384,6 +409,7 @@ bool PolicyManager::updateEPGDomains(const URI& egURI, bool& toRemove) {
         newsmap != gs.subnet_map)
         updated = true;
 
+    gs.epGroup = epg;
     gs.instContext = newInstCtx;
     gs.floodDomain = newfd;
     gs.floodContext = newfdctx;
@@ -399,9 +425,9 @@ PolicyManager::getVnidForGroup(const opflex::modb::URI& eg) {
     lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     return it != group_map.end() && it->second.instContext &&
-           it->second.instContext.get()->getEncapId()
-           ? it->second.instContext.get()->getEncapId().get()
-           : optional<uint32_t>();
+        it->second.instContext.get()->getEncapId()
+        ? it->second.instContext.get()->getEncapId().get()
+        : optional<uint32_t>();
 }
 
 boost::optional<opflex::modb::URI>
@@ -415,9 +441,9 @@ optional<string> PolicyManager::getMulticastIPForGroup(const URI& eg) {
     lock_guard<mutex> guard(state_mutex);
     group_map_t::iterator it = group_map.find(eg);
     return it != group_map.end() && it->second.instContext &&
-           it->second.instContext.get()->getMulticastGroupIP()
-           ? it->second.instContext.get()->getMulticastGroupIP().get()
-           : optional<string>();
+        it->second.instContext.get()->getMulticastGroupIP()
+        ? it->second.instContext.get()->getMulticastGroupIP().get()
+        : optional<string>();
 }
 
 bool PolicyManager::groupExists(const opflex::modb::URI& eg) {
@@ -427,16 +453,31 @@ bool PolicyManager::groupExists(const opflex::modb::URI& eg) {
 
 void PolicyManager::getGroups(uri_set_t& epURIs) {
     lock_guard<mutex> guard(state_mutex);
-    BOOST_FOREACH (const group_map_t::value_type& kv, group_map) {
+    for (const group_map_t::value_type& kv : group_map) {
         epURIs.insert(kv.first);
     }
 }
 
 void PolicyManager::getRoutingDomains(uri_set_t& rdURIs) {
     lock_guard<mutex> guard(state_mutex);
-    BOOST_FOREACH (const rd_map_t::value_type& kv, rd_map) {
+    for (const rd_map_t::value_type& kv : rd_map) {
         rdURIs.insert(kv.first);
     }
+}
+
+bool PolicyManager::removeContractIfRequired(const URI& contractURI) {
+    using namespace modelgbp::gbp;
+    contract_map_t::iterator itr = contractMap.find(contractURI);
+    optional<shared_ptr<Contract> > contract =
+        Contract::resolve(framework, contractURI);
+    if (!contract && itr != contractMap.end() &&
+        itr->second.providerGroups.empty() &&
+        itr->second.consumerGroups.empty()) {
+        LOG(DEBUG) << "Removing index for contract " << contractURI;
+        contractMap.erase(itr);
+        return true;
+    }
+    return false;
 }
 
 void PolicyManager::updateGroupContracts(class_id_t groupType,
@@ -462,12 +503,12 @@ void PolicyManager::updateGroupContracts(class_id_t groupType,
             vector<shared_ptr<EpGroupToConsContractRSrc> > consRel;
             epg.get()->resolveGbpEpGroupToConsContractRSrc(consRel);
 
-            BOOST_FOREACH(shared_ptr<EpGroupToProvContractRSrc>& rel, provRel) {
+            for (shared_ptr<EpGroupToProvContractRSrc>& rel : provRel) {
                 if (rel->isTargetSet()) {
                     newProvided.insert(rel->getTargetURI().get());
                 }
             }
-            BOOST_FOREACH(shared_ptr<EpGroupToConsContractRSrc>& rel, consRel) {
+            for (shared_ptr<EpGroupToConsContractRSrc>& rel : consRel) {
                 if (rel->isTargetSet()) {
                     newConsumed.insert(rel->getTargetURI().get());
                 }
@@ -483,14 +524,14 @@ void PolicyManager::updateGroupContracts(class_id_t groupType,
             vector<shared_ptr<L3ExternalNetworkToConsContractRSrc> > consRel;
             l3n.get()->resolveGbpL3ExternalNetworkToConsContractRSrc(consRel);
 
-            BOOST_FOREACH(shared_ptr<L3ExternalNetworkToProvContractRSrc>& rel,
-                          provRel) {
+            for (shared_ptr<L3ExternalNetworkToProvContractRSrc>& rel :
+                     provRel) {
                 if (rel->isTargetSet()) {
                     newProvided.insert(rel->getTargetURI().get());
                 }
             }
-            BOOST_FOREACH(shared_ptr<L3ExternalNetworkToConsContractRSrc>& rel,
-                          consRel) {
+            for (shared_ptr<L3ExternalNetworkToConsContractRSrc>& rel :
+                     consRel) {
                 if (rel->isTargetSet()) {
                     newConsumed.insert(rel->getTargetURI().get());
                 }
@@ -499,17 +540,17 @@ void PolicyManager::updateGroupContracts(class_id_t groupType,
     }
     if (remove) {
         provRemoved.insert(gcs.contractsProvided.begin(),
-                gcs.contractsProvided.end());
+                           gcs.contractsProvided.end());
         consRemoved.insert(gcs.contractsConsumed.begin(),
-                gcs.contractsConsumed.end());
+                           gcs.contractsConsumed.end());
         groupContractMap.erase(groupURI);
     } else {
 
 #define CALC_DIFF(olds, news, added, removed)                                  \
-    std::set_difference(olds.begin(), olds.end(),                              \
-            news.begin(), news.end(), inserter(removed, removed.begin()));     \
-    std::set_difference(news.begin(), news.end(),                              \
-            olds.begin(), olds.end(), inserter(added, added.begin()));
+        std::set_difference(olds.begin(), olds.end(),                          \
+                news.begin(), news.end(), inserter(removed, removed.begin())); \
+        std::set_difference(news.begin(), news.end(),                          \
+                olds.begin(), olds.end(), inserter(added, added.begin()));
 
         CALC_DIFF(gcs.contractsProvided, newProvided, provAdded, provRemoved);
         CALC_DIFF(gcs.contractsConsumed, newConsumed, consAdded, consRemoved);
@@ -525,88 +566,177 @@ void PolicyManager::updateGroupContracts(class_id_t groupType,
     INSERT_ALL(updatedContracts, consRemoved);
 #undef INSERT_ALL
 
-    BOOST_FOREACH(const URI& u, provAdded) {
+    for (const URI& u : provAdded) {
         contractMap[u].providerGroups.insert(groupURI);
         LOG(DEBUG) << u << ": prov add: " << groupURI;
     }
-    BOOST_FOREACH(const URI& u, consAdded) {
+    for (const URI& u : consAdded) {
         contractMap[u].consumerGroups.insert(groupURI);
         LOG(DEBUG) << u << ": cons add: " << groupURI;
     }
-    BOOST_FOREACH(const URI& u, provRemoved) {
+    for (const URI& u : provRemoved) {
         contractMap[u].providerGroups.erase(groupURI);
         LOG(DEBUG) << u << ": prov remove: " << groupURI;
+        removeContractIfRequired(u);
     }
-    BOOST_FOREACH(const URI& u, consRemoved) {
+    for (const URI& u : consRemoved) {
         contractMap[u].consumerGroups.erase(groupURI);
         LOG(DEBUG) << u << ": cons remove: " << groupURI;
+        removeContractIfRequired(u);
     }
 }
 
-/**
- * Check equality of L24Classifier objects.
- */
-static bool
-ruleEq(const shared_ptr<PolicyRule>& lhsObj,
-       const shared_ptr<PolicyRule>& rhsObj) {
-    using namespace modelgbp::gbpe;
-    if (lhsObj == rhsObj) {
-        return true;
-    }
-    if (lhsObj.get() == NULL || rhsObj.get() == NULL) {
-        return false;
-    }
-    const shared_ptr<L24Classifier>& lhs = lhsObj->getL24Classifier();
-    const shared_ptr<L24Classifier>& rhs = rhsObj->getL24Classifier();
-
-    return lhsObj->getDirection() == rhsObj->getDirection() &&
-        lhsObj->getAllow() == rhsObj->getAllow() &&
-        lhs.get() && rhs.get() &&
-        lhs->getURI() == rhs->getURI() &&
-        lhs->getArpOpc() == rhs->getArpOpc() &&
-        lhs->getConnectionTracking() == rhs->getConnectionTracking() &&
-        lhs->getDFromPort() == rhs->getDFromPort() &&
-        lhs->getDToPort() == rhs->getDToPort() &&
-        lhs->getEtherT() == rhs->getEtherT() &&
-        lhs->getProt() == rhs->getProt() &&
-        lhs->getSFromPort() == rhs->getSFromPort() &&
-        lhs->getSToPort() == rhs->getSToPort();
+bool operator==(const PolicyRule& lhs, const PolicyRule& rhs) {
+    return (lhs.getDirection() == rhs.getDirection() &&
+            lhs.getAllow() == rhs.getAllow() &&
+            lhs.getRemoteSubnets() == rhs.getRemoteSubnets() &&
+            *lhs.getL24Classifier() == *rhs.getL24Classifier());
 }
 
-bool PolicyManager::updateContractRules(const URI& contractURI,
-        bool& notFound) {
-    using namespace modelgbp::gbp;
-    using namespace modelgbp::gbpe;
+bool operator!=(const PolicyRule& lhs, const PolicyRule& rhs) {
+    return !operator==(lhs,rhs);
+}
 
-    optional<shared_ptr<Contract> > contract =
-            Contract::resolve(framework, contractURI);
-    if (!contract) {
+std::ostream & operator<<(std::ostream &os, const PolicyRule& rule) {
+    using modelgbp::gbp::DirectionEnumT;
+    using flowutils::operator<<;
+
+    os << "PolicyRule[classifier="
+       << rule.getL24Classifier()->getURI()
+       << ",allow=" << rule.getAllow()
+       << ",prio=" << rule.getPriority()
+       << ",direction=";
+
+    switch (rule.getDirection()) {
+    case DirectionEnumT::CONST_BIDIRECTIONAL:
+        os << "bi";
+        break;
+    case DirectionEnumT::CONST_IN:
+        os << "in";
+        break;
+    case DirectionEnumT::CONST_OUT:
+        os << "out";
+        break;
+    }
+
+    if (!rule.getRemoteSubnets().empty())
+        os << ",remoteSubnets=" << rule.getRemoteSubnets();
+
+    os << "]";
+    return os;
+}
+
+void PolicyManager::resolveSubnets(OFFramework& framework,
+                                   const optional<URI>& subnets_uri,
+                                   /* out */ flowutils::subnets_t& subnets_out) {
+    using modelgbp::gbp::Subnets;
+    using modelgbp::gbp::Subnet;
+
+    if (!subnets_uri) return;
+    optional<shared_ptr<Subnets> > subnets_obj =
+        Subnets::resolve(framework, subnets_uri.get());
+    if (!subnets_obj) return;
+
+    vector<shared_ptr<Subnet> > subnets;
+    subnets_obj.get()->resolveGbpSubnet(subnets);
+
+    boost::system::error_code ec;
+
+    for (shared_ptr<Subnet>& subnet : subnets) {
+        if (!subnet->isAddressSet() || !subnet->isPrefixLenSet())
+            continue;
+        address addr = address::from_string(subnet->getAddress().get(), ec);
+        if (ec) continue;
+        addr = packets::mask_address(addr, subnet->getPrefixLen().get());
+        subnets_out.insert(make_pair(addr.to_string(),
+                                     subnet->getPrefixLen().get()));
+    }
+}
+
+template <typename Parent, typename Child>
+void resolveChildren(shared_ptr<Parent>& parent,
+                     /* out */ vector<shared_ptr<Child> > &children) { }
+template <>
+void resolveChildren(shared_ptr<modelgbp::gbp::Subject>& subject,
+                     vector<shared_ptr<modelgbp::gbp::Rule> > &rules) {
+    subject->resolveGbpRule(rules);
+}
+template <>
+void resolveChildren(shared_ptr<modelgbp::gbp::SecGroupSubject>& subject,
+                     vector<shared_ptr<modelgbp::gbp::SecGroupRule> > &rules) {
+    subject->resolveGbpSecGroupRule(rules);
+}
+template <>
+void resolveChildren(shared_ptr<modelgbp::gbp::Contract>& contract,
+                     vector<shared_ptr<modelgbp::gbp::Subject> > &subjects) {
+    contract->resolveGbpSubject(subjects);
+}
+template <>
+void resolveChildren(shared_ptr<modelgbp::gbp::SecGroup>& secgroup,
+                     vector<shared_ptr<modelgbp::gbp::SecGroupSubject> > &subjects) {
+    secgroup->resolveGbpSecGroupSubject(subjects);
+}
+
+template <typename Rule>
+void resolveRemoteSubnets(OFFramework& framework,
+                          shared_ptr<Rule>& parent,
+                          /* out */ flowutils::subnets_t &remoteSubnets) {}
+
+template <>
+void resolveRemoteSubnets(OFFramework& framework,
+                          shared_ptr<modelgbp::gbp::SecGroupRule>& rule,
+                          /* out */ flowutils::subnets_t &remoteSubnets) {
+    typedef modelgbp::gbp::SecGroupRuleToRemoteAddressRSrc RASrc;
+    vector<shared_ptr<RASrc> > raSrcs;
+    rule->resolveGbpSecGroupRuleToRemoteAddressRSrc(raSrcs);
+    for (const shared_ptr<RASrc>& ra : raSrcs) {
+        optional<URI> subnets_uri = ra->getTargetURI();
+        PolicyManager::resolveSubnets(framework, subnets_uri, remoteSubnets);
+    }
+}
+
+template <typename Parent, typename Subject, typename Rule>
+static bool updatePolicyRules(OFFramework& framework,
+                              const URI& parentURI, bool& notFound,
+                              PolicyManager::rule_list_t& oldRules) {
+    using modelgbp::gbpe::L24Classifier;
+    using modelgbp::gbp::RuleToClassifierRSrc;
+    using modelgbp::gbp::RuleToActionRSrc;
+    using modelgbp::gbp::AllowDenyAction;
+
+    optional<shared_ptr<Parent> > parent =
+        Parent::resolve(framework, parentURI);
+    if (!parent) {
         notFound = true;
         return false;
     }
     notFound = false;
 
-    /* get all classifiers for this contract as an ordered-list */
-    rule_list_t newRules;
+    /* get all classifiers for this parent as an ordered-list */
+    PolicyManager::rule_list_t newRules;
     OrderComparator<shared_ptr<Rule> > ruleComp;
     OrderComparator<shared_ptr<L24Classifier> > classifierComp;
     vector<shared_ptr<Subject> > subjects;
-    contract.get()->resolveGbpSubject(subjects);
-    BOOST_FOREACH(shared_ptr<Subject>& sub, subjects) {
+    resolveChildren(parent.get(), subjects);
+    for (shared_ptr<Subject>& sub : subjects) {
         vector<shared_ptr<Rule> > rules;
-        sub->resolveGbpRule(rules);
+        resolveChildren(sub, rules);
         stable_sort(rules.begin(), rules.end(), ruleComp);
 
-        BOOST_FOREACH(shared_ptr<Rule>& rule, rules) {
+        uint16_t rulePrio = flowutils::MAX_POLICY_RULE_PRIORITY;
+
+        for (shared_ptr<Rule>& rule : rules) {
             if (!rule->isDirectionSet()) {
                 continue;       // ignore rules with no direction
             }
             uint8_t dir = rule->getDirection().get();
+            flowutils::subnets_t remoteSubnets;
+            resolveRemoteSubnets(framework, rule, remoteSubnets);
             vector<shared_ptr<L24Classifier> > classifiers;
             vector<shared_ptr<RuleToClassifierRSrc> > clsRel;
             rule->resolveGbpRuleToClassifierRSrc(clsRel);
 
-            BOOST_FOREACH(shared_ptr<RuleToClassifierRSrc>& r, clsRel) {
+            for (shared_ptr<RuleToClassifierRSrc>& r : clsRel) {
                 if (!r->isTargetSet() ||
                     r->getTargetClass().get() != L24Classifier::CLASS_ID) {
                     continue;
@@ -623,7 +753,7 @@ bool PolicyManager::updateContractRules(const URI& contractURI,
             rule->resolveGbpRuleToActionRSrc(actRel);
             bool ruleAllow = true;
             uint32_t minOrder = UINT32_MAX;
-            BOOST_FOREACH(shared_ptr<RuleToActionRSrc>& r, actRel) {
+            for (shared_ptr<RuleToActionRSrc>& r : actRel) {
                 if (!r->isTargetSet() ||
                     r->getTargetClass().get() != AllowDenyAction::CLASS_ID) {
                     continue;
@@ -638,29 +768,49 @@ bool PolicyManager::updateContractRules(const URI& contractURI,
                 }
             }
 
-            BOOST_FOREACH (const shared_ptr<L24Classifier>& c, classifiers) {
-                newRules.push_back(make_shared<PolicyRule>(dir, c, ruleAllow));
+            uint16_t clsPrio = 0;
+            for (const shared_ptr<L24Classifier>& c : classifiers) {
+                newRules.push_back(std::
+                                   make_shared<PolicyRule>(dir,
+                                                           rulePrio - clsPrio,
+                                                           c, ruleAllow,
+                                                           remoteSubnets));
+                if (clsPrio < 127)
+                    clsPrio += 1;
             }
+            if (rulePrio > 128)
+                rulePrio -= 128;
         }
     }
-    ContractState& cs = contractMap[contractURI];
-
-    rule_list_t::const_iterator li = cs.rules.begin();
-    rule_list_t::const_iterator ri = newRules.begin();
-    while (li != cs.rules.end() && ri != newRules.end() &&
-           ruleEq(*li, *ri)) {
+    PolicyManager::rule_list_t::const_iterator li = oldRules.begin();
+    PolicyManager::rule_list_t::const_iterator ri = newRules.begin();
+    while (li != oldRules.end() && ri != newRules.end() &&
+           li->get() == ri->get()) {
         ++li;
         ++ri;
     }
-    bool updated = (li != cs.rules.end() || ri != newRules.end());
+    bool updated = (li != oldRules.end() || ri != newRules.end());
     if (updated) {
-        cs.rules.swap(newRules);
-        BOOST_FOREACH(shared_ptr<PolicyRule>& c, cs.rules) {
-            LOG(DEBUG) << contractURI << " rule: "
-                << c->getL24Classifier()->getURI();
+        oldRules.swap(newRules);
+        for (shared_ptr<PolicyRule>& c : oldRules) {
+            LOG(DEBUG) << parentURI << ": " << *c;
         }
     }
     return updated;
+}
+
+bool PolicyManager::updateSecGrpRules(const URI& secGrpURI, bool& notFound) {
+    using namespace modelgbp::gbp;
+    return updatePolicyRules<SecGroup, SecGroupSubject,
+                             SecGroupRule>(framework, secGrpURI,
+                                           notFound, secGrpMap[secGrpURI]);
+}
+
+bool PolicyManager::updateContractRules(const URI& contrURI, bool& notFound) {
+    using namespace modelgbp::gbp;
+    ContractState& cs = contractMap[contrURI];
+    return updatePolicyRules<Contract, Subject, Rule>(framework, contrURI,
+                                                      notFound, cs.rules);
 }
 
 void PolicyManager::getContractProviders(const URI& contractURI,
@@ -669,7 +819,7 @@ void PolicyManager::getContractProviders(const URI& contractURI,
     contract_map_t::const_iterator it = contractMap.find(contractURI);
     if (it != contractMap.end()) {
         epgURIs.insert(it->second.providerGroups.begin(),
-                it->second.providerGroups.end());
+                       it->second.providerGroups.end());
     }
 }
 
@@ -679,7 +829,7 @@ void PolicyManager::getContractConsumers(const URI& contractURI,
     contract_map_t::const_iterator it = contractMap.find(contractURI);
     if (it != contractMap.end()) {
         epgURIs.insert(it->second.consumerGroups.begin(),
-                it->second.consumerGroups.end());
+                       it->second.consumerGroups.end());
     }
 }
 
@@ -694,12 +844,12 @@ void PolicyManager::getContractsForGroup(const URI& eg,
     vector<shared_ptr<EpGroupToConsContractRSrc> > consRel;
     epg.get()->resolveGbpEpGroupToConsContractRSrc(consRel);
 
-    BOOST_FOREACH(shared_ptr<EpGroupToProvContractRSrc>& rel, provRel) {
+    for (shared_ptr<EpGroupToProvContractRSrc>& rel : provRel) {
         if (rel->isTargetSet()) {
             contractURIs.insert(rel->getTargetURI().get());
         }
     }
-    BOOST_FOREACH(shared_ptr<EpGroupToConsContractRSrc>& rel, consRel) {
+    for (shared_ptr<EpGroupToConsContractRSrc>& rel : consRel) {
         if (rel->isTargetSet()) {
             contractURIs.insert(rel->getTargetURI().get());
         }
@@ -712,7 +862,16 @@ void PolicyManager::getContractRules(const URI& contractURI,
     contract_map_t::const_iterator it = contractMap.find(contractURI);
     if (it != contractMap.end()) {
         rules.insert(rules.end(), it->second.rules.begin(),
-                it->second.rules.end());
+                     it->second.rules.end());
+    }
+}
+
+void PolicyManager::getSecGroupRules(const URI& secGroupURI,
+                                     /* out */ rule_list_t& rules) {
+    lock_guard<mutex> guard(state_mutex);
+    secgrp_map_t::const_iterator it = secGrpMap.find(secGroupURI);
+    if (it != secGrpMap.end()) {
+        rules.insert(rules.end(), it->second.begin(), it->second.end());
     }
 }
 
@@ -732,22 +891,59 @@ void PolicyManager::updateL3Nets(const opflex::modb::URI& rdURI,
         vector<shared_ptr<L3ExternalDomain> > extDoms;
         vector<shared_ptr<L3ExternalNetwork> > extNets;
         rd.get()->resolveGbpL3ExternalDomain(extDoms);
-        BOOST_FOREACH(shared_ptr<L3ExternalDomain>& extDom, extDoms) {
+        for (shared_ptr<L3ExternalDomain>& extDom : extDoms) {
             extDom->resolveGbpL3ExternalNetwork(extNets);
         }
 
         unordered_set<URI> newNets;
-        BOOST_FOREACH(shared_ptr<L3ExternalNetwork> net, extNets) {
+        for (shared_ptr<L3ExternalNetwork> net : extNets) {
             newNets.insert(net->getURI());
 
             L3NetworkState& l3s = l3n_map[net->getURI()];
+            if (l3s.routingDomain && l3s.natEpg) {
+                uri_ref_map_t::iterator it =
+                    nat_epg_l3_ext.find(l3s.natEpg.get());
+                if (it != nat_epg_l3_ext.end()) {
+                    it->second.erase(net->getURI());
+                    if (it->second.size() == 0)
+                        nat_epg_l3_ext.erase(it);
+                }
+            }
+
             l3s.routingDomain = rd;
+
+            optional<shared_ptr<L3ExternalNetworkToNatEPGroupRSrc> > natRef =
+                net->resolveGbpL3ExternalNetworkToNatEPGroupRSrc();
+            if (natRef) {
+                optional<URI> natEpg = natRef.get()->getTargetURI();
+                if (natEpg) {
+                    l3s.natEpg = natEpg.get();
+                    uri_set_t& s = nat_epg_l3_ext[l3s.natEpg.get()];
+                    s.insert(net->getURI());
+                }
+            } else {
+                l3s.natEpg = boost::none;
+            }
+
             updateGroupContracts(L3ExternalNetwork::CLASS_ID,
                                  net->getURI(), contractsToNotify);
         }
-        BOOST_FOREACH(const URI& net, rds.extNets) {
+        for (const URI& net : rds.extNets) {
             if (newNets.find(net) == newNets.end()) {
-                l3n_map.erase(net);
+                l3n_map_t::iterator lit = l3n_map.find(net);
+                if (lit != l3n_map.end()) {
+                    if (lit->second.natEpg) {
+                        uri_ref_map_t::iterator git =
+                            nat_epg_l3_ext.find(lit->second.natEpg.get());
+                        if (git != nat_epg_l3_ext.end()) {
+                            git->second.erase(net);
+                            if (git->second.size() == 0)
+                                nat_epg_l3_ext.erase(git);
+                        }
+                    }
+                }
+
+                l3n_map.erase(lit);
 
                 updateGroupContracts(L3ExternalNetwork::CLASS_ID,
                                      net, contractsToNotify);
@@ -755,7 +951,7 @@ void PolicyManager::updateL3Nets(const opflex::modb::URI& rdURI,
         }
         rds.extNets = newNets;
     } else {
-        BOOST_FOREACH(const URI& net, rds.extNets) {
+        for (const URI& net : rds.extNets) {
             l3n_map.erase(net);
             updateGroupContracts(L3ExternalNetwork::CLASS_ID,
                                  net, contractsToNotify);
@@ -764,22 +960,59 @@ void PolicyManager::updateL3Nets(const opflex::modb::URI& rdURI,
     }
 }
 
+uint8_t PolicyManager::getEffectiveRoutingMode(const URI& egURI) {
+    using namespace modelgbp::gbp;
+
+    optional<shared_ptr<FloodDomain> > fd = getFDForGroup(egURI);
+    optional<shared_ptr<BridgeDomain> > bd = getBDForGroup(egURI);
+
+    uint8_t floodMode = UnknownFloodModeEnumT::CONST_DROP;
+    if (fd)
+        floodMode = fd.get()
+            ->getUnknownFloodMode(floodMode);
+
+    uint8_t routingMode = RoutingModeEnumT::CONST_ENABLED;
+    if (bd)
+        routingMode = bd.get()->getRoutingMode(routingMode);
+
+    // In learning mode, we can't handle routing at present
+    if (floodMode == UnknownFloodModeEnumT::CONST_FLOOD)
+        routingMode = RoutingModeEnumT::CONST_DISABLED;
+
+    return routingMode;
+}
+
+boost::optional<address>
+PolicyManager::getRouterIpForSubnet(modelgbp::gbp::Subnet& subnet) {
+    optional<const string&> routerIpStr = subnet.getVirtualRouterIp();
+    if (routerIpStr) {
+        boost::system::error_code ec;
+        address routerIp = address::from_string(routerIpStr.get(), ec);
+        if (ec) {
+            LOG(WARNING) << "Invalid router IP for subnet "
+                         << subnet.getURI() << ": "
+                         << routerIpStr.get() << ": " << ec.message();
+        } else {
+            return routerIp;
+        }
+    }
+    return boost::none;
+}
+
 PolicyManager::DomainListener::DomainListener(PolicyManager& pmanager_)
     : pmanager(pmanager_) {}
 PolicyManager::DomainListener::~DomainListener() {}
 
 void PolicyManager::DomainListener::objectUpdated(class_id_t class_id,
                                                   const URI& uri) {
-
+    using namespace modelgbp::gbp;
     unique_lock<mutex> guard(pmanager.state_mutex);
 
     uri_set_t notifyGroups;
-    uri_set_t notifyContracts;
+    uri_set_t notifyRds;
 
     if (class_id == modelgbp::gbp::EpGroup::CLASS_ID) {
         pmanager.group_map[uri];
-    } else if (class_id == modelgbp::gbp::RoutingDomain::CLASS_ID) {
-        pmanager.updateL3Nets(uri, notifyContracts);
     }
     for (PolicyManager::group_map_t::iterator itr = pmanager.group_map.begin();
          itr != pmanager.group_map.end(); ) {
@@ -789,15 +1022,29 @@ void PolicyManager::DomainListener::objectUpdated(class_id_t class_id,
         }
         itr = (toRemove ? pmanager.group_map.erase(itr) : ++itr);
     }
-    guard.unlock();
-    BOOST_FOREACH(const URI& u, notifyGroups) {
-        pmanager.notifyEPGDomain(u);
+    // Determine routing-domains that may be affected by changes to NAT EPG
+    for (const URI& u : notifyGroups) {
+        uri_ref_map_t::iterator it = pmanager.nat_epg_l3_ext.find(u);
+        if (it != pmanager.nat_epg_l3_ext.end()) {
+            for (const URI& extNet : it->second) {
+                l3n_map_t::iterator it2 = pmanager.l3n_map.find(extNet);
+                if (it2 != pmanager.l3n_map.end()) {
+                    notifyRds.insert(it2->second.routingDomain.get()->getURI());
+                }
+            }
+        }
     }
-    BOOST_FOREACH(const URI& u, notifyContracts) {
-        pmanager.notifyContract(u);
+    notifyRds.erase(uri);   // Avoid updating twice
+    guard.unlock();
+
+    for (const URI& u : notifyGroups) {
+        pmanager.notifyEPGDomain(u);
     }
     if (class_id != modelgbp::gbp::EpGroup::CLASS_ID) {
         pmanager.notifyDomain(class_id, uri);
+    }
+    for (const URI& rd : notifyRds) {
+        pmanager.notifyDomain(RoutingDomain::CLASS_ID, rd);
     }
 }
 
@@ -816,6 +1063,8 @@ void PolicyManager::ContractListener::objectUpdated(class_id_t classId,
     uri_set_t contractsToNotify;
     if (classId == EpGroup::CLASS_ID) {
         pmanager.updateGroupContracts(classId, uri, contractsToNotify);
+    } else if (classId == L3ExternalNetwork::CLASS_ID) {
+        pmanager.updateGroupContracts(classId, uri, contractsToNotify);
     } else if (classId == RoutingDomain::CLASS_ID) {
         pmanager.updateL3Nets(uri, contractsToNotify);
     } else {
@@ -825,7 +1074,7 @@ void PolicyManager::ContractListener::objectUpdated(class_id_t classId,
 
         /* recompute the rules for all contracts if a policy object changed */
         for (PolicyManager::contract_map_t::iterator itr =
-                pmanager.contractMap.begin();
+                 pmanager.contractMap.begin();
              itr != pmanager.contractMap.end(); ) {
             bool notFound = false;
             if (pmanager.updateContractRules(itr->first, notFound)) {
@@ -839,7 +1088,14 @@ void PolicyManager::ContractListener::objectUpdated(class_id_t classId,
              */
             if (notFound && itr->first == uri) {
                 contractsToNotify.insert(itr->first);
-                itr = pmanager.contractMap.erase(itr);
+                // if contract has providers/consumers, only clear the rules
+                if (itr->second.providerGroups.empty() &&
+                    itr->second.consumerGroups.empty()) {
+                    itr = pmanager.contractMap.erase(itr);
+                } else {
+                    itr->second.rules.clear();
+                    ++itr;
+                }
             } else {
                 ++itr;
             }
@@ -847,8 +1103,42 @@ void PolicyManager::ContractListener::objectUpdated(class_id_t classId,
     }
     guard.unlock();
 
-    BOOST_FOREACH(const URI& u, contractsToNotify) {
+    for (const URI& u : contractsToNotify) {
         pmanager.notifyContract(u);
+    }
+}
+
+PolicyManager::SecGroupListener::SecGroupListener(PolicyManager& pmanager_)
+    : pmanager(pmanager_) {}
+
+PolicyManager::SecGroupListener::~SecGroupListener() {}
+
+void PolicyManager::SecGroupListener::objectUpdated(class_id_t classId,
+                                                    const URI& uri) {
+    LOG(DEBUG) << "SecGroupListener update for URI " << uri;
+    unique_lock<mutex> guard(pmanager.state_mutex);
+    uri_set_t toNotify;
+    if (classId == modelgbp::gbp::SecGroup::CLASS_ID) {
+        pmanager.secGrpMap[uri];
+    }
+    PolicyManager::secgrp_map_t::iterator it = pmanager.secGrpMap.begin();
+    while (it != pmanager.secGrpMap.end()) {
+        bool notfound = false;
+        if (pmanager.updateSecGrpRules(it->first, notfound)) {
+            toNotify.insert(it->first);
+        }
+        if (notfound) {
+            toNotify.insert(it->first);
+            it = pmanager.secGrpMap.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    guard.unlock();
+
+    for (const URI& u : toNotify) {
+        pmanager.notifySecGroup(u);
     }
 }
 
@@ -857,8 +1147,7 @@ PolicyManager::ConfigListener::ConfigListener(PolicyManager& pmanager_)
 
 PolicyManager::ConfigListener::~ConfigListener() {}
 
-void PolicyManager::ConfigListener::objectUpdated(class_id_t classId,
-                                                  const URI& uri) {
+void PolicyManager::ConfigListener::objectUpdated(class_id_t, const URI& uri) {
     pmanager.notifyConfig(uri);
 }
 

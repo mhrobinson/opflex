@@ -6,24 +6,31 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <sys/eventfd.h>
-#include <string>
-#include <fstream>
-#include <boost/unordered_map.hpp>
-#include <boost/thread.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/lock_guard.hpp>
-#include <boost/foreach.hpp>
-#include <boost/scope_exit.hpp>
-
-#include "ovs.h"
 #include "SwitchConnection.h"
 #include "logging.h"
 
-using namespace std;
-using namespace boost;
+#include <sys/eventfd.h>
+#include <string>
+#include <fstream>
 
-typedef lock_guard<mutex> mutex_guard;
+#include <boost/scope_exit.hpp>
+
+#include <unordered_map>
+
+#include "ovs-ofputil.h"
+
+extern "C" {
+#include <lib/util.h>
+#include <lib/dirs.h>
+#include <lib/socket-util.h>
+#include <lib/stream.h>
+#include <lib/poll-loop.h>
+#include <lib/jsonrpc.h>
+#include <openvswitch/vconn.h>
+#include <openvswitch/ofp-msgs.h>
+}
+
+typedef std::lock_guard<std::mutex> mutex_guard;
 
 const int LOST_CONN_BACKOFF_MSEC = 5000;
 
@@ -62,8 +69,7 @@ SwitchConnection::UnregisterOnConnectListener(OnConnectListener *l) {
 }
 
 void
-SwitchConnection::RegisterMessageHandler(ofptype msgType,
-        MessageHandler *handler)
+SwitchConnection::RegisterMessageHandler(int msgType, MessageHandler *handler)
 {
     if (handler) {
         mutex_guard lock(connMtx);
@@ -72,7 +78,7 @@ SwitchConnection::RegisterMessageHandler(ofptype msgType,
 }
 
 void
-SwitchConnection::UnregisterMessageHandler(ofptype msgType,
+SwitchConnection::UnregisterMessageHandler(int msgType,
         MessageHandler *handler)
 {
     mutex_guard lock(connMtx);
@@ -98,7 +104,7 @@ void SwitchConnection::unregisterJsonMessageHandler(
 }
 
 int
-SwitchConnection::Connect(ofp_version protoVer) {
+SwitchConnection::Connect(int protoVer) {
     if (ofConn != NULL && jsonConn != NULL) {    // connection already created
         return true;
     }
@@ -116,13 +122,13 @@ SwitchConnection::Connect(ofp_version protoVer) {
         }
     }
 
-    connThread = new boost::thread(boost::ref(*this));
+    connThread.reset(new std::thread(std::ref(*this)));
     return err;
 }
 
 int
 SwitchConnection::doConnectOF() {
-    string swPath;
+    std::string swPath;
     swPath.append("unix:").append(ovs_rundir()).append("/")
             .append(switchName).append(".mgmt");
 
@@ -136,7 +142,7 @@ SwitchConnection::doConnectOF() {
     }
 
     /* Verify we have the correct protocol version */
-    ofp_version connVersion = (ofp_version)vconn_get_version(newConn);
+    int connVersion = vconn_get_version(newConn);
     if (connVersion != ofProtoVersion) {
         LOG(WARNING) << "Remote supports version " << connVersion <<
                 ", wanted " << ofProtoVersion;
@@ -164,18 +170,18 @@ int SwitchConnection::doConnectJson() {
      * Simplest way to figure out that name is to read the PID file that the daemon
      * creates.
      */
-    string pidFileName;
+    std:: string pidFileName;
     pidFileName.append(ovs_rundir()).append("/" OVS_VSWITCH_DAEMON ".pid");
-    string pidStr;
+    std:: string pidStr;
 
-    ifstream pidFile(pidFileName.c_str());
+    std::ifstream pidFile(pidFileName.c_str());
     getline(pidFile, pidStr);
     if (pidStr.empty()) {
         LOG(ERROR) << "Unable to read PID of " << OVS_VSWITCH_DAEMON
             << " from file " << pidFileName;
         return ENOTCONN;
     }
-    string sockName;
+    std::string sockName;
     sockName.append("unix:").append(ovs_rundir())
         .append("/" OVS_VSWITCH_DAEMON ".").append(pidStr).append(".ctl");
 
@@ -208,8 +214,7 @@ SwitchConnection::Disconnect() {
     isDisconnecting = true;
     if (connThread && SignalPollEvent()) {
         connThread->join();
-        delete connThread;
-        connThread = NULL;
+        connThread.reset();
     }
 
     mutex_guard lock(connMtx);
@@ -230,12 +235,12 @@ SwitchConnection::IsConnectedLocked() {
            jsonConn != NULL && jsonrpc_get_status(jsonConn) == 0;
 }
 
-ofp_version
+int
 SwitchConnection::GetProtocolVersion() {
     return ofProtoVersion;
 }
 
-string SwitchConnection::getSwitchName() {
+std::string SwitchConnection::getSwitchName() {
     return switchName;
 }
 
@@ -328,10 +333,10 @@ SwitchConnection::receiveOFMessage() {
             return err;
         } else {
             ofptype type;
-            if (!ofptype_decode(&type, (ofp_header *)ofpbuf_data(recvMsg))) {
+            if (!ofptype_decode(&type, (ofp_header *)recvMsg->data)) {
                 HandlerMap::const_iterator itr = msgHandlers.find(type);
                 if (itr != msgHandlers.end()) {
-                    BOOST_FOREACH(MessageHandler *h, itr->second) {
+                    for (MessageHandler *h : itr->second) {
                         h->Handle(this, type, recvMsg);
                     }
                 }
@@ -358,7 +363,7 @@ int SwitchConnection::receiveJsonMessage() {
             jsonrpc_msg_destroy(recvMsg);
             return EOF;
         } else {
-            BOOST_FOREACH(JsonMessageHandler *h, jsonMsgHandlers) {
+            for (JsonMessageHandler *h : jsonMsgHandlers) {
                 h->Handle(this, recvMsg);
             }
             jsonrpc_msg_destroy(recvMsg);
@@ -441,31 +446,34 @@ SwitchConnection::FireOnConnectListeners() {
         b2 = ofpraw_alloc(OFPRAW_NXT_SET_PACKET_IN_FORMAT,
                           GetProtocolVersion(), sizeof *pif);
         pif = (nx_set_packet_in_format*)ofpbuf_put_zeros(b2, sizeof *pif);
-        pif->format = htonl(NXPIF_NXM);
+        pif->format = htonl(NXPIF_NXT_PACKET_IN);
         SendMessage(b2);
     }
+    notifyConnectListeners();
+}
 
-    BOOST_FOREACH(OnConnectListener *l, onConnectListeners) {
+void
+SwitchConnection::notifyConnectListeners() {
+    for (OnConnectListener *l : onConnectListeners) {
         l->Connected(this);
     }
 }
 
 void
 SwitchConnection::EchoRequestHandler::Handle(SwitchConnection *swConn,
-        ofptype msgType, ofpbuf *msg) {
-    LOG(DEBUG) << "Got ECHO request";
-    const ofp_header *rq = (const ofp_header *)ofpbuf_data(msg);
+                                             int, ofpbuf *msg) {
+    const ofp_header *rq = (const ofp_header *)msg->data;
     struct ofpbuf *echoReplyMsg = make_echo_reply(rq);
     swConn->SendMessage(echoReplyMsg);
 }
 
 void
-SwitchConnection::ErrorHandler::Handle(SwitchConnection *swConn,
-        ofptype msgType, ofpbuf *msg) {
-    const struct ofp_header *oh = (ofp_header *)ofpbuf_data(msg);
+SwitchConnection::ErrorHandler::Handle(SwitchConnection*, int,
+                                       ofpbuf *msg) {
+    const struct ofp_header *oh = (ofp_header *)msg->data;
     ofperr err = ofperr_decode_msg(oh, NULL);
     LOG(ERROR) << "Got error reply from switch ("
-               << std::hex << oh->xid << "): "
+               << ntohl(oh->xid) << "): "
                << ofperr_get_name(err) << ": "
                << ofperr_get_description(err);
 }

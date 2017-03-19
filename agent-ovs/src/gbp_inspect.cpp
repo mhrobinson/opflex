@@ -8,18 +8,10 @@
  * terms of the Eclipse Public License v1.0 which accompanies this distribution,
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
-#include <unistd.h>
+
+#include "logging.h"
+#include "cmd.h"
 #include <signal.h>
-
-#include <string>
-#include <vector>
-#include <iostream>
-
-#include <boost/program_options.hpp>
-#include <boost/foreach.hpp>
-#include <boost/scoped_ptr.hpp>
-#include <boost/iostreams/device/file_descriptor.hpp>
-#include <boost/iostreams/stream.hpp>
 
 #include <modelgbp/dmtree/Root.hpp>
 #include <modelgbp/metadata/metadata.hpp>
@@ -28,12 +20,21 @@
 #include <opflex/ofcore/OFConstants.h>
 #include <opflex/ofcore/InspectorClient.h>
 
-#include "logging.h"
-#include "cmd.h"
+#include <boost/program_options.hpp>
+#include <boost/iostreams/device/file_descriptor.hpp>
+#include <boost/iostreams/stream.hpp>
+
+#include <string>
+#include <vector>
+#include <iostream>
+#include <memory>
+
+#include <unistd.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 
 using std::string;
-using boost::scoped_ptr;
+using std::unique_ptr;
 namespace po = boost::program_options;
 using opflex::ofcore::InspectorClient;
 using opflex::modb::URI;
@@ -50,6 +51,10 @@ void sighandler(int sig) {
 
 int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
+
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+
     // Parse command line options
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -60,7 +65,7 @@ int main(int argc, char** argv) {
          "Use the specified log level (default warning)")
         ("syslog", "Log to syslog instead of file or standard out")
         ("socket", po::value<string>()->default_value(DEF_SOCKET),
-         "Connect to the specified UNIX domain socket (default "DEF_SOCKET")")
+         "Connect to the specified UNIX domain socket (default " DEF_SOCKET ")")
         ("query,q", po::value<std::vector<string> >(),
          "Query for a specific object with subjectname,uri or all objects "
          "of a specific type with subjectname")
@@ -71,8 +76,11 @@ int main(int argc, char** argv) {
         ("output,o", po::value<std::string>()->default_value(""),
          "Output the results to the specified file (default standard out)")
         ("type,t", po::value<std::string>()->default_value("tree"),
-         "Specify the output format: tree, list, or dump (default tree)")
+         "Specify the output format: tree, asciitree, list, or dump "
+         "(default tree)")
         ("props,p", "Include object properties in output")
+        ("width,w", po::value<int>()->default_value(w.ws_col - 1),
+         "Truncate output to the specified number of characters")
         ;
 
     bool log_to_syslog = false;
@@ -88,6 +96,7 @@ int main(int argc, char** argv) {
     bool props = false;
     bool recursive = false;
     bool followRefs = false;
+    int truncate = 0;
 
     po::variables_map vm;
     try {
@@ -118,30 +127,34 @@ int main(int argc, char** argv) {
         type = vm["type"].as<string>();
         if (vm.count("query"))
             queries = vm["query"].as<std::vector<string> >();
+        truncate = vm["width"].as<int>();
     } catch (po::unknown_option e) {
         std::cerr << e.what() << std::endl;
         return 1;
     }
 
-    initLogging(level_str, log_to_syslog, log_file);
+    if (truncate < 0) truncate = 0;
+
+    initLogging(level_str, log_to_syslog, log_file, "gbp-inspect");
 
     if (queries.size() == 0 && load_file == "") {
         LOG(ERROR) << "No queries specified";
         return 1;
     }
-    if (type != "tree" && type != "dump" && type != "list") {
+    if (type != "tree" && type != "asciitree" &&
+        type != "dump" && type != "list") {
         LOG(ERROR) << "Invalid output type: " << type;
         return 1;
     }
 
     try {
-        scoped_ptr<InspectorClient>
+        unique_ptr<InspectorClient>
             client(InspectorClient::newInstance(socket,
                                                 modelgbp::getMetadata()));
         client->setRecursive(recursive);
         client->setFollowRefs(followRefs);
 
-        BOOST_FOREACH(string query, queries) {
+        for (string query : queries) {
             size_t ci = query.find_first_of(",");
             if (ci == string::npos) {
                 client->addClassQuery(query);
@@ -183,9 +196,11 @@ int main(int argc, char** argv) {
         if (type == "dump")
             client->dumpToFile(outf);
         else if (type == "list")
-            client->prettyPrint(outs, false, props);
+            client->prettyPrint(outs, false, props, true, truncate);
+        else if (type == "asciitree")
+            client->prettyPrint(outs, true, props, false, truncate);
         else
-            client->prettyPrint(outs, true, props);
+            client->prettyPrint(outs, true, props, true, truncate);
 
         fclose(outf);
 

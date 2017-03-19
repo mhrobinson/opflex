@@ -17,22 +17,45 @@
 #include <set>
 #include <memory>
 
-#include <boost/unordered_map.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/noncopyable.hpp>
 #include <boost/optional.hpp>
+#include <boost/functional/hash.hpp>
 #include <uv.h>
 
 #include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/engine/internal/OpflexClientConnection.h"
 #include "opflex/ofcore/PeerStatusListener.h"
-#ifndef SIMPLE_RPC
+#include "opflex/ofcore/OFTypes.h"
 #include "yajr/transport/ZeroCopyOpenSSL.hpp"
-#endif
+#include "ThreadManager.h"
 
 #pragma once
 #ifndef OPFLEX_ENGINE_OPFLEXPOOL_H
 #define OPFLEX_ENGINE_OPFLEXPOOL_H
+
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+#if __cplusplus > 199711L
+
+namespace std {
+/**
+ * Template specialization for std::hash<OpflexPool::peer_name_t>, making
+ * prop_key_t suitable as a key in a std::unordered_map
+ */
+template<> struct hash<std::pair<std::string, int>> {
+    /**
+     * Hash the peer_name_t
+     */
+    std::size_t operator()(const std::pair<std::string, int>& u) const {
+        return boost::hash_value(u);
+    }
+};
+
+} /* namespace std */
+
+#endif
 
 namespace opflex {
 namespace engine {
@@ -42,14 +65,17 @@ class OpflexMessage;
 
 /**
  * A pool of OpFlex connections that will keep track of connection
- * state and assign a master 
+ * state and assign a master
  */
 class OpflexPool : private boost::noncopyable {
 public:
     /**
      * Allocate a new opflex connection pool
+     * @param factory a factory for generating new connection handlers
+     * upon connection.
+     * @param threadManager thread manager
      */
-    OpflexPool(HandlerFactory& factory);
+    OpflexPool(HandlerFactory& factory, util::ThreadManager& threadManager);
     ~OpflexPool();
 
     /**
@@ -122,7 +148,26 @@ public:
      * @param verifyPeers set to true to verify that peer certificates
      * properly chain to a trusted root
      */
-    void enableSSL(const std::string& caStorePath, bool verifyPeers = true);
+    void enableSSL(const std::string& caStorePath,
+                   bool verifyPeers = true);
+
+    /**
+     * Enable SSL for connections to opflex peers
+     *
+     * @param caStorePath the filesystem path to a directory
+     * containing CA certificates, or to a file containing a specific
+     * CA certificate.
+     * @param keyAndCertFilePath the path to the PEM file for this peer,
+     * containing its certificate and its private key, possibly encrypted.
+     * @param passphrase the passphrase to be used to decrypt the private
+     * key within this peer's PEM file
+     * @param verifyPeers set to true to verify that peer certificates
+     * properly chain to a trusted root
+     */
+    void enableSSL(const std::string& caStorePath,
+                   const std::string& keyAndCertFilePath,
+                   const std::string& passphrase,
+                   bool verifyPeers = true);
 
     /**
      * Add an OpFlex peer.
@@ -189,7 +234,7 @@ public:
      * thread
      * @return the number of ready connections to which we sent the message
      */
-    size_t sendToRole(OpflexMessage* message, 
+    size_t sendToRole(OpflexMessage* message,
                       ofcore::OFConstants::OpflexRole role,
                       bool sync = false);
 
@@ -220,7 +265,7 @@ public:
     /**
      * A set of peer names
      */
-    typedef boost::unordered_set<peer_name_t> peer_name_set_t;
+    typedef OF_UNORDERED_SET<peer_name_t> peer_name_set_t;
 
     /**
      * Update the set of connections in the pool to include only
@@ -238,6 +283,7 @@ public:
 
 private:
     HandlerFactory& factory;
+    util::ThreadManager& threadManager;
 
     /** opflex unique name */
     std::string name;
@@ -247,7 +293,11 @@ private:
     boost::optional<std::string> location;
 
 #ifndef SIMPLE_RPC
+  #ifdef HAVE_CXX11
+    std::unique_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> clientCtx;
+  #else
     std::auto_ptr<yajr::transport::ZeroCopyOpenSSL::Ctx> clientCtx;
+  #endif
 #endif
 
     uv_mutex_t conn_mutex;
@@ -259,7 +309,7 @@ private:
         uint8_t roles;
     };
 
-    typedef boost::unordered_map<peer_name_t, ConnData> conn_map_t;
+    typedef OF_UNORDERED_MAP<peer_name_t, ConnData> conn_map_t;
     typedef std::set<OpflexClientConnection*> conn_set_t;
 
     class RoleData {
@@ -275,12 +325,10 @@ private:
     role_map_t roles;
     bool active;
 
-    uv_loop_t client_loop;
-    uv_thread_t client_thread;
+    uv_loop_t* client_loop;
     uv_async_t conn_async;
     uv_async_t cleanup_async;
     uv_async_t writeq_async;
-    uv_timer_t timer;
 
     std::list<ofcore::PeerStatusListener*> peerStatusListeners;
     ofcore::PeerStatusListener::Health curHealth;
@@ -288,21 +336,16 @@ private:
     void doRemovePeer(const std::string& hostname, int port);
     void doAddPeer(const std::string& hostname, int port);
     void doSetRoles(ConnData& cd, uint8_t newroles);
-    void updateRole(ConnData& cd, uint8_t newroles, 
+    void updateRole(ConnData& cd, uint8_t newroles,
                     ofcore::OFConstants::OpflexRole role);
     void connectionClosed(OpflexClientConnection* conn);
     void doConnectionClosed(OpflexClientConnection* conn);
-    uv_loop_t* getLoop() { return &client_loop; }
+    uv_loop_t* getLoop() { return client_loop; }
     void messagesReady();
 
-    static void client_thread_func(void* pool);
     static void on_conn_async(uv_async_t *handle);
     static void on_cleanup_async(uv_async_t *handle);
     static void on_writeq_async(uv_async_t *handle);
-#ifdef SIMPLE_RPC
-    static void on_conn_closed(OpflexClientConnection* conn);
-    static void on_timer(uv_timer_t* timer);
-#endif
 
     void updatePeerStatus(const std::string& hostname, int port,
                           ofcore::PeerStatusListener::PeerStatus status);

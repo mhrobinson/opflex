@@ -12,8 +12,6 @@
 #ifndef OVSAGENT_PACKETINHANDLER_H
 #define OVSAGENT_PACKETINHANDLER_H
 
-#include <boost/unordered_map.hpp>
-#include <boost/shared_ptr.hpp>
 #include <boost/noncopyable.hpp>
 
 #include "SwitchConnection.h"
@@ -22,21 +20,25 @@
 #include "TableState.h"
 #include "Agent.h"
 
+struct dp_packet;
+struct flow;
+struct ofputil_packet_in;
+
 namespace ovsagent {
 
-class FlowManager;
+class IntFlowManager;
 
 /**
  * Handler for packet-in messages arriving from the switch
  */
 class PacketInHandler : public MessageHandler,
-                        public PortStatusListener, 
+                        public PortStatusListener,
                         private boost::noncopyable {
 public:
     /**
      * Construct a PacketInHandler
      */
-    PacketInHandler(Agent& agent, FlowManager& flowManager);
+    PacketInHandler(Agent& agent, IntFlowManager& intFlowManager);
 
     /**
      * Set the port mapper to use
@@ -57,14 +59,9 @@ public:
     void registerConnection(SwitchConnection* c) { switchConnection = c; }
 
     /**
-     * Unset the switch connection
-     */
-    void unregisterConnection() { switchConnection = NULL; }
-
-    /**
      * Reconcile the provided reactive flow against the current system
      * state.
-     * 
+     *
      * @param fe the flow entry to reconcile
      * @return true if the flow should be ignored during reconcilation (and
      * therefore left as is), false if it must be compared with expected flows
@@ -75,7 +72,7 @@ public:
     // MessageHandler
     // **************
 
-    virtual void Handle(SwitchConnection *swConn, ofptype msgType,
+    virtual void Handle(SwitchConnection *swConn, int msgType,
                         ofpbuf *msg);
 
     // ******************
@@ -96,17 +93,19 @@ private:
      *
      * @param conn the openflow switch connection
      * @param pi the packet-in
-     * @param proto an openflow proto object
+     * @param pi_buffer_id the buffer ID associated with the packet-in
+     * @param proto an openflow proto version
      * @param pkt the packet from the packet-in
      * @param flow the parsed flow from the packet
      */
     void handleLearnPktIn(SwitchConnection *conn,
                           struct ofputil_packet_in& pi,
-                          ofputil_protocol& proto,
-                          struct ofpbuf& pkt,
+                          uint32_t pi_buffer_id,
+                          int proto,
+                          const struct dp_packet* pkt,
                           struct flow& flow);
-    bool writeLearnFlow(SwitchConnection *conn, 
-                        ofputil_protocol& proto,
+    bool writeLearnFlow(SwitchConnection *conn,
+                        int proto,
                         struct ofputil_packet_in& pi,
                         struct flow& flow,
                         bool stage2);
@@ -117,7 +116,7 @@ private:
     void anyFlowCb(const FlowEntryList& flows);
 
     Agent& agent;
-    FlowManager& flowManager;
+    IntFlowManager& intFlowManager;
     PortMapper* portMapper;
     FlowReader* flowReader;
     SwitchConnection* switchConnection;

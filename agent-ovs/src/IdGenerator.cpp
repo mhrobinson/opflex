@@ -8,52 +8,193 @@
  */
 
 #include <fstream>
-#include <boost/shared_ptr.hpp>
-#include <boost/foreach.hpp>
+#include <algorithm>
+
 #include "IdGenerator.h"
 #include "logging.h"
 
-using namespace std;
-using namespace boost;
-using namespace opflex::modb;
-
 namespace ovsagent {
 
+using std::string;
+using std::lock_guard;
+using std::mutex;
 typedef uint16_t UriLenType;
 const uint32_t MAX_ID_VALUE = (1 << 31);
 
-uint32_t IdGenerator::getId(const string& nmspc, const URI& uri) {
+IdGenerator::IdGenerator() : cleanupInterval(duration(5*60*1000)) {
+
+}
+
+IdGenerator::IdGenerator(duration cleanupInterval_)
+    : cleanupInterval(cleanupInterval_) {
+
+}
+
+void IdGenerator::setAllocHook(const std::string& nmspc,
+                               alloc_hook_t& allocHook) {
+    lock_guard<mutex> guard(id_mutex);
+    NamespaceMap::iterator nitr = namespaces.find(nmspc);
+    if (nitr == namespaces.end()) {
+        LOG(ERROR) << "Cannot set hook for uninitialized namespace: " << nmspc;
+    }
+
+    nitr->second.allocHook = allocHook;
+}
+
+uint32_t IdGenerator::getId(const string& nmspc, const string& str) {
+    lock_guard<mutex> guard(id_mutex);
     NamespaceMap::iterator nitr = namespaces.find(nmspc);
     if (nitr == namespaces.end()) {
         LOG(ERROR) << "ID requested for unknown namespace: " << nmspc;
-        return 0;
+        return -1;
     }
 
     IdMap& idmap = nitr->second;
-    IdMap::Uri2IdMap::const_iterator it = idmap.ids.find(uri);
+    IdMap::Str2EIdMap::iterator eit = idmap.erasedIds.find(str);
+    if (eit != idmap.erasedIds.end())
+        idmap.erasedIds.erase(eit);
+
+    IdMap::Str2IdMap::const_iterator it = idmap.ids.find(str);
     if (it == idmap.ids.end()) {
-        if (++idmap.lastUsedId == MAX_ID_VALUE) {
-            LOG(ERROR) << "ID overflow in namespace: " << nmspc;
+        if (idmap.freeIds.empty()) {
+            LOG(ERROR) << "No free IDS in namespace: " << nmspc;
             return -1;
         }
-        idmap.ids[uri] = idmap.lastUsedId;
-        LOG(DEBUG) << "Assigned " << nmspc << ":" << idmap.lastUsedId
-            << " to URI: " << uri;
+        id_range start = *idmap.freeIds.begin();
+        uint32_t newId = idmap.ids[str] = start.start;
+        if (idmap.allocHook) {
+            if (!idmap.allocHook.get()(str, newId)) {
+                LOG(ERROR) << "ID allocation canceled by allocation hook";
+                return -1;
+            }
+        }
+        idmap.freeIds.erase(start);
+        if (start.start < start.end)
+            idmap.freeIds.insert(id_range(start.start + 1, start.end));
+
+        LOG(DEBUG) << "Assigned " << nmspc << ":" << newId
+            << " to id: " << str;
         persist(nmspc, idmap);
-        return idmap.lastUsedId;
+        return newId;
     }
+
     return it->second;
 }
 
-void IdGenerator::erase(const string& nmspc, const URI& uri) {
+void IdGenerator::erase(const string& nmspc, const string& str) {
+    lock_guard<mutex> guard(id_mutex);
     NamespaceMap::iterator nitr = namespaces.find(nmspc);
     if (nitr == namespaces.end()) {
         return;
     }
-    // XXX Need a way to reclaim IDs not in use
+
     IdMap& idmap = nitr->second;
-    if (idmap.ids.erase(uri) > 0) {
-        persist(nmspc, idmap);
+    IdMap::Str2EIdMap::const_iterator it = idmap.erasedIds.find(str);
+    if (it == idmap.erasedIds.end()) {
+        idmap.erasedIds[str] = std::chrono::steady_clock::now();
+    }
+}
+
+uint32_t IdGenerator::getRemainingIds(const std::string& nmspc) {
+    lock_guard<mutex> guard(id_mutex);
+    return getRemainingIdsLocked(nmspc);
+}
+
+uint32_t IdGenerator::getFreeRangeCount(const std::string& nmspc) {
+    lock_guard<mutex> guard(id_mutex);
+    NamespaceMap::iterator nitr = namespaces.find(nmspc);
+    if (nitr == namespaces.end()) {
+        return 0;
+    }
+
+    IdMap& idmap = nitr->second;
+    return idmap.freeIds.size();
+}
+
+uint32_t IdGenerator::getRemainingIdsLocked(const std::string& nmspc) {
+    NamespaceMap::iterator nitr = namespaces.find(nmspc);
+    if (nitr == namespaces.end()) {
+        return 0;
+    }
+
+    IdMap& idmap = nitr->second;
+    uint32_t remaining = 0;
+    for (const id_range& r : idmap.freeIds) {
+        remaining += r.end - r.start + 1;
+    }
+    return remaining;
+}
+
+void IdGenerator::cleanup() {
+    lock_guard<mutex> guard(id_mutex);
+    time_point now = std::chrono::steady_clock::now();
+    for (NamespaceMap::value_type& nmv : namespaces) {
+        bool changed = false;
+        IdMap& idmap = nmv.second;
+        IdMap::Str2EIdMap::iterator it = idmap.erasedIds.begin();
+        while (it != idmap.erasedIds.end()) {
+            if ((now - it->second) > cleanupInterval) {
+                IdMap::Str2IdMap::iterator iit = idmap.ids.find(it->first);
+                if (iit != idmap.ids.end()) {
+                    uint32_t erasedId = iit->second;
+
+                    // return erasedId to free set
+                    std::set<id_range>::iterator ub =
+                        std::upper_bound(idmap.freeIds.begin(),
+                                         idmap.freeIds.end(),
+                                         id_range(erasedId, erasedId));
+                    std::set<id_range>::iterator prev;
+                    if (ub != idmap.freeIds.end()) {
+                        prev = ub;
+                        prev--;
+                    } else {
+                        prev = idmap.freeIds.begin();
+                    }
+
+                    if (prev != idmap.freeIds.end() &&
+                        ub != idmap.freeIds.end() &&
+                        prev->end + 1 == erasedId &&
+                        erasedId + 1 == ub->start) {
+                        // merge prev and upper bound
+                        id_range newr(prev->start, ub->end);
+                        idmap.freeIds.erase(*prev);
+                        idmap.freeIds.erase(*ub);
+                        idmap.freeIds.insert(newr);
+                    } else if (prev != idmap.freeIds.end() &&
+                               prev->end + 1 == erasedId) {
+                        // extend prev bound range to include erased id
+                        id_range newprev(prev->start, erasedId);
+                        idmap.freeIds.erase(*prev);
+                        idmap.freeIds.insert(newprev);
+                    } else if (ub != idmap.freeIds.end() &&
+                               erasedId + 1 == ub->start) {
+                        // extend ub range to include erased Id
+                        id_range newub(erasedId, ub->end);
+                        idmap.freeIds.erase(*ub);
+                        idmap.freeIds.insert(newub);
+                    } else {
+                        // add new range for just this value
+                        idmap.freeIds.insert(id_range(erasedId, erasedId));
+                    }
+                    changed = true;
+
+                    idmap.ids.erase(iit);
+                    LOG(DEBUG) << "Cleaned up ID " << it->first
+                               << " in namespace " << nmv.first;
+
+                }
+                it = idmap.erasedIds.erase(it);
+                continue;
+            }
+            it++;
+        }
+        if (changed)
+            persist(nmv.first, nmv.second);
+
+        LOG(DEBUG) << "Remaining IDs for namespace "
+                   << nmv.first << ": "
+                   << getRemainingIdsLocked(nmv.first)
+                   << " in " << idmap.freeIds.size() << " range(s)";
     }
 }
 
@@ -68,7 +209,7 @@ void IdGenerator::persist(const std::string& nmspc, IdMap& idmap) {
     }
 
     string fname = getNamespaceFile(nmspc);
-    ofstream file(fname.c_str(), ios_base::binary);
+    std::ofstream file(fname.c_str(), std::ios_base::binary);
     if (!file.is_open()) {
         LOG(ERROR) << "Unable to open file " << fname << " for writing";
         return;
@@ -79,13 +220,18 @@ void IdGenerator::persist(const std::string& nmspc, IdMap& idmap) {
         LOG(ERROR) << "Failed to write to file: " << fname;
         return;
     }
-    BOOST_FOREACH (const IdMap::Uri2IdMap::value_type& kv, idmap.ids) {
+    for (const IdMap::Str2IdMap::value_type& kv : idmap.ids) {
         const uint32_t& id = kv.second;
-        const URI& uri = kv.first;
-        UriLenType len = uri.toString().size();
+        const string& str = kv.first;
+        if (str.size() > UINT16_MAX) {
+            LOG(ERROR) << "ID string length exceeds maximum";
+            continue;
+        }
+        uint16_t len = str.size();
+
         if (file.write((const char *)&id, sizeof(id)).fail() ||
             file.write((const char *)&len, sizeof(len)).fail() ||
-            file.write(uri.toString().c_str(), len).fail()) {
+            file.write(str.c_str(), len).fail()) {
             LOG(ERROR) << "Failed to write to file: " << fname;
             break;
         }
@@ -94,21 +240,23 @@ void IdGenerator::persist(const std::string& nmspc, IdMap& idmap) {
     LOG(DEBUG) << "Wrote " << idmap.ids.size() << " entries to file " << fname;
 }
 
-void IdGenerator::initNamespace(const std::string& nmspc) {
+void IdGenerator::initNamespace(const std::string& nmspc,
+                                uint32_t minId, uint32_t maxId) {
+    lock_guard<mutex> guard(id_mutex);
     IdMap& idmap = namespaces[nmspc];
     idmap.ids.clear();
+    idmap.freeIds.insert(id_range(minId, maxId));
 
     if (persistDir.empty()) {
         return;
     }
     string fname = getNamespaceFile(nmspc);
     LOG(DEBUG) << "Loading IDs from file " << fname;
-    ifstream file(fname.c_str(), ios_base::binary);
+    std::ifstream file(fname.c_str(), std::ios_base::binary);
     if (!file.is_open()) {
         LOG(DEBUG) << "Unable to open file " << fname << " for reading";
         return;
     }
-    idmap.lastUsedId = 0;
 
     char magic[8];
     uint32_t formatVersion;
@@ -126,28 +274,85 @@ void IdGenerator::initNamespace(const std::string& nmspc) {
                    << formatVersion;
         return;
     }
+
+    std::set<uint32_t> usedIds;
+
     while (!file.fail()) {
         uint32_t id;
-        UriLenType len;
+        uint16_t len;
         if (file.read((char *)&id, sizeof(id)).eof() ||
             file.read((char *)&len, sizeof(len)).eof()) {
-            LOG(DEBUG) << "Got EOF, loaded " << idmap.ids.size()
-                << " entries from " << fname << "; last used id="
-                << idmap.lastUsedId;
             break;
         }
-        shared_ptr<string> uriStr(new string((size_t)len, '\0'));
-        if (file.read((char *)uriStr->data(), len).eof()) {
-            LOG(DEBUG) << "Unexpected EOF while reading URI";
+        std::unique_ptr<string> str(new string((size_t)len, '\0'));
+        if (file.read((char *)str->data(), len).eof()) {
+            LOG(DEBUG) << "Unexpected EOF while reading string";
             break;
         }
-        idmap.ids[URI(uriStr)] = id;
-        idmap.lastUsedId = max(idmap.lastUsedId, id);
-        LOG(DEBUG) << "Loaded URI: " << uriStr->c_str() << ", "
-            << nmspc << ":" << id;
+        if (usedIds.find(id) != usedIds.end()) {
+            LOG(WARNING) << "ID file corrupt: " << id << " seen more than once";
+        } else if (id > maxId) {
+            LOG(WARNING) << "ID file corrupt: " << id << " above maximum";
+        } else if (id < minId) {
+            LOG(WARNING) << "ID file corrupt: " << id << " below minimum";
+        } else {
+            idmap.ids[*str] = id;
+        }
+        usedIds.insert(id);
+        LOG(DEBUG) << "Loaded str: " << *str << ", "
+                   << nmspc << ":" << id;
     }
     file.close();
+
+    uint32_t cur = minId;
+    idmap.freeIds.clear();
+    for (auto id : usedIds) {
+        if (id > cur)
+            idmap.freeIds.insert(id_range(cur, id - 1));
+        cur = id + 1;
+    }
+    if (cur < maxId)
+        idmap.freeIds.insert(id_range(cur, maxId));
+
+    LOG(DEBUG) << "Loaded " << idmap.ids.size()
+               << " entries from " << fname << " with "
+               << idmap.freeIds.size() << " free range(s)";
+
+}
+
+void IdGenerator::collectGarbage(const std::string& ns,
+                                 garbage_cb_t cb) {
+    NamespaceMap::iterator nitr = namespaces.find(ns);
+    if (nitr == namespaces.end()) {
+        return;
+    }
+
+    IdMap& map = nitr->second;
+
+    for (IdMap::Str2IdMap::iterator uit = map.ids.begin();
+         uit != map.ids.end(); uit++) {
+        if (cb(ns, uit->first))
+            continue;
+
+        IdMap::Str2EIdMap::const_iterator it = map.erasedIds.find(uit->first);
+        if (it == map.erasedIds.end()) {
+            map.erasedIds[uit->first] = std::chrono::steady_clock::now();
+            LOG(DEBUG) << "Found garbage " << uit->first << " in " << ns;
+        }
+    }
+}
+
+bool operator<(const IdGenerator::id_range& lhs,
+               const IdGenerator::id_range& rhs) {
+    return lhs.start < rhs.start;
+}
+bool operator==(const IdGenerator::id_range& lhs,
+                const IdGenerator::id_range& rhs) {
+    return lhs.start == rhs.start && lhs.end == rhs.end;
+}
+bool operator!=(const IdGenerator::id_range& lhs,
+                const IdGenerator::id_range& rhs) {
+    return !(lhs == rhs);
 }
 
 } // namespace ovsagent
-

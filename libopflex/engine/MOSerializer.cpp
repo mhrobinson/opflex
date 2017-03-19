@@ -17,9 +17,7 @@
 #include <cstdio>
 #include <sstream>
 
-#include <boost/make_shared.hpp>
 #include <boost/utility.hpp>
-#include <boost/shared_ptr.hpp>
 #include <boost/foreach.hpp>
 #include <rapidjson/document.h>
 #include <rapidjson/filewritestream.h>
@@ -46,14 +44,10 @@ using modb::Region;
 using rapidjson::Value;
 using rapidjson::Document;
 using rapidjson::SizeType;
-using boost::shared_ptr;
-using boost::make_shared;
-using boost::next;
 using std::vector;
 using std::string;
-using boost::unordered_set;
 
-MOSerializer::MOSerializer(ObjectStore* store_, Listener* listener_) 
+MOSerializer::MOSerializer(ObjectStore* store_, Listener* listener_)
     : store(store_), listener(listener_) {
 
 }
@@ -83,7 +77,7 @@ void MOSerializer::deserialize_ref(modb::mointernal::StoreClient& client,
         }
     } catch (std::out_of_range e) {
         // ignore unknown class
-        LOG(DEBUG) << "Could not deserialize reference of unknown class " 
+        LOG(DEBUG) << "Could not deserialize reference of unknown class "
                    << subject.GetString();
     }
 }
@@ -102,7 +96,7 @@ void MOSerializer::deserialize_enum(modb::mointernal::StoreClient& client,
         } else {
             oi.addUInt64(pinfo.getId(), val);
         }
-        
+
     } catch (std::out_of_range e) {
         LOG(WARNING) << "No value of type "
                      << ei.getName()
@@ -127,8 +121,8 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
     try {
         URI uri(uriv.GetString());
         const ClassInfo& ci = store->getClassInfo(classv.GetString());
-        shared_ptr<ObjectInstance> oi = 
-            make_shared<ObjectInstance>(ci.getId());
+        OF_SHARED_PTR<ObjectInstance> oi =
+            OF_MAKE_SHARED<ObjectInstance>(ci.getId());
         if (mo.HasMember("properties")) {
             const Value& properties = mo["properties"];
             if (properties.IsArray()) {
@@ -145,7 +139,7 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                     const Value& pvalue = prop["data"];
 
                     try {
-                        const PropertyInfo& pinfo = 
+                        const PropertyInfo& pinfo =
                             ci.getProperty(pname.GetString());
                         switch (pinfo.getType()) {
                         case PropertyInfo::STRING:
@@ -235,21 +229,21 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                             break;
                         }
                     } catch (std::invalid_argument e) {
-                        LOG(DEBUG) << "Invalid property " 
-                                   << pname.GetString() 
-                                   << " in class " 
+                        LOG(DEBUG) << "Invalid property "
+                                   << pname.GetString()
+                                   << " in class "
                                    << ci.getName();
                     } catch (std::out_of_range e) {
-                        LOG(DEBUG) << "Unknown property " 
-                                   << pname.GetString() 
-                                   << " in class " 
+                        LOG(DEBUG) << "Unknown property "
+                                   << pname.GetString()
+                                   << " in class "
                                    << ci.getName();
                         // ignore property
                     }
                 }
             }
         }
-        
+
         bool remoteUpdated = false;
         if (client.putIfModified(ci.getId(), uri, oi)) {
             remoteUpdated = true;
@@ -263,9 +257,9 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
 
             if (pname.IsString() && psubj.IsString() && prel->IsString()) {
                 try {
-                    const ClassInfo& parent_class = 
+                    const ClassInfo& parent_class =
                         store->getClassInfo(psubj.GetString());
-                    const PropertyInfo& parent_prop = 
+                    const PropertyInfo& parent_prop =
                         parent_class.getProperty(prel->GetString());
                     URI parent_uri(pname.GetString());
                     if (client.isPresent(parent_class.getId(), parent_uri)) {
@@ -292,7 +286,7 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
         }
 
         if (replaceChildren) {
-            unordered_set<string> children;
+            OF_UNORDERED_SET<string> children;
             if (mo.HasMember("children")) {
                 const Value& cvs = mo["children"];
                 if (cvs.IsArray()) {
@@ -304,7 +298,7 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                 }
             }
 
-            const ClassInfo::property_map_t props = ci.getProperties();
+            const ClassInfo::property_map_t& props = ci.getProperties();
             ClassInfo::property_map_t::const_iterator it;
             for (it = props.begin(); it != props.end(); ++it) {
                 if (it->second.getType() == PropertyInfo::COMPOSITE) {
@@ -346,15 +340,19 @@ void MOSerializer::deserialize(const rapidjson::Value& mo,
                 listener->remoteObjectUpdated(ci.getId(), uri);
         }
 
+    } catch (std::invalid_argument e) {
+        // ignore invalid URIs
+        LOG(DEBUG) << "Could not deserialize invalid object of class "
+                   << classv.GetString();
     } catch (std::out_of_range e) {
         // ignore unknown class
-        LOG(DEBUG) << "Could not deserialize object of unknown class " 
+        LOG(DEBUG) << "Could not deserialize object of unknown class "
                    << classv.GetString();
     }
 }
 
 static void getRoots(ObjectStore* store, Region::obj_set_t& roots) {
-    unordered_set<string> owners;
+    OF_UNORDERED_SET<string> owners;
     store->getOwners(owners);
     BOOST_FOREACH(const string& owner, owners) {
         try {
@@ -390,6 +388,7 @@ void MOSerializer::dumpMODB(const std::string& file) {
         return;
     }
     dumpMODB(pfile);
+    fclose(pfile);
     LOG(INFO) << "Wrote MODB to " << file;
 }
 
@@ -412,7 +411,7 @@ size_t MOSerializer::readMOs(FILE* pfile, StoreClient& client) {
     return i;
 }
 
-#define FORMAT_PROP(gfunc, type, output)                                \
+#define FORMAT_PROP(gfunc, type, prefixTrunc, output)                   \
     {                                                                   \
         std::ostringstream str;                                         \
         if (pit->second.getCardinality() == modb::PropertyInfo::SCALAR) { \
@@ -432,7 +431,8 @@ size_t MOSerializer::readMOs(FILE* pfile, StoreClient& client) {
             }                                                           \
             str << ']';                                                 \
         }                                                               \
-        dispProps[pit->second.getName()] = str.str();                   \
+        dispProps[pit->second.getName()] =                              \
+            std::make_pair<bool, std::string>(prefixTrunc, str.str());  \
     }
 
 static std::string getRefSubj(const modb::ObjectStore& store,
@@ -455,31 +455,29 @@ static std::string getEnumVal(const modb::PropertyInfo& pinfo, uint64_t v) {
     }
 }
 
+static const string BULLET("\xe2\xa6\x81");
+static const string HORIZ("\xe2\x94\x80");
+static const string VERT("\xe2\x94\x82");
+static const string DOWN_HORIZ("\xe2\x94\xac");
+static const string ARC_UP_RIGHT("\xe2\x95\xb0");
+static const string VERT_RIGHT("\xe2\x94\x9c");
+static const string ELLIPSIS("\xe2\x80\xa6");
+
 void MOSerializer::displayObject(std::ostream& ostream,
                                  modb::class_id_t class_id,
                                  const modb::URI& uri,
                                  bool tree, bool root,
                                  bool includeProps,
-                                 bool last, const std::string& prefix) {
+                                 bool last, const std::string& prefix,
+                                 size_t prefixCharCount,
+                                 bool utf8, size_t truncate) {
     StoreClient& client = store->getReadOnlyStoreClient();
     const modb::ClassInfo& ci = store->getClassInfo(class_id);
-    const boost::shared_ptr<const modb::mointernal::ObjectInstance>
+    const OF_SHARED_PTR<const modb::mointernal::ObjectInstance>
         oi(client.get(class_id, uri));
     std::map<modb::class_id_t, std::vector<modb::URI> > children;
 
-    ostream << prefix;
-    if (tree) {
-        if (last && !root)
-            ostream << "`-";
-        else
-            ostream << '-';
-        if (root)
-            ostream << '-';
-        ostream << "* ";
-    }
-    ostream << ci.getName() << "," << uri << " " << std::endl;
-
-    typedef std::map<std::string, std::string> dmap;
+    typedef std::map<std::string, std::pair<bool, std::string> > dmap;
     dmap dispProps;
     size_t maxPropName = 0;
 
@@ -497,27 +495,27 @@ void MOSerializer::displayObject(std::ostream& ostream,
 
         switch (pit->second.getType()) {
         case modb::PropertyInfo::STRING:
-            FORMAT_PROP(String, std::string, pvalue)
+            FORMAT_PROP(String, std::string, false, pvalue)
             break;
         case modb::PropertyInfo::S64:
-            FORMAT_PROP(Int64, int64_t, pvalue)
+            FORMAT_PROP(Int64, int64_t, false, pvalue)
             break;
         case modb::PropertyInfo::U64:
-            FORMAT_PROP(UInt64, uint64_t, pvalue)
+            FORMAT_PROP(UInt64, uint64_t, false, pvalue)
             break;
         case modb::PropertyInfo::MAC:
-            FORMAT_PROP(MAC, modb::MAC, pvalue)
+            FORMAT_PROP(MAC, modb::MAC, false, pvalue)
             break;
         case modb::PropertyInfo::ENUM8:
         case modb::PropertyInfo::ENUM16:
         case modb::PropertyInfo::ENUM32:
         case modb::PropertyInfo::ENUM64:
-            FORMAT_PROP(UInt64, uint64_t,
+            FORMAT_PROP(UInt64, uint64_t, false,
                         pvalue
                         << " (" << getEnumVal(pit->second, pvalue) << ")");
             break;
         case modb::PropertyInfo::REFERENCE:
-            FORMAT_PROP(Reference, modb::reference_t,
+            FORMAT_PROP(Reference, modb::reference_t, true,
                         getRefSubj(*store, pvalue) << "," << pvalue.second);
             break;
         case modb::PropertyInfo::COMPOSITE:
@@ -532,49 +530,146 @@ void MOSerializer::displayObject(std::ostream& ostream,
     std::map<modb::class_id_t,
              std::vector<modb::URI> >::iterator clsit;
     std::vector<modb::URI>::const_iterator cit;
-    for (clsit = children.begin(); clsit != children.end(); ++clsit) {
+    for (clsit = children.begin(); clsit != children.end(); ) {
         if (clsit->second.size() == 0)
-            children.erase(clsit);
-        else
+            children.erase(clsit++);
+        else {
             hasChildren = true;
+            ++clsit;
+        }
     }
 
-    if (includeProps && dispProps.size() > 0) {
-        string pprefix = prefix;
-        if (tree) {
+    size_t lineLength = 0;
+    ostream << prefix;
+    lineLength += prefixCharCount;
+
+    if (tree) {
+        if (root) {
+            ostream << (utf8 ? HORIZ : "-");
             if (last)
-                pprefix = pprefix + " ";
-            if (!hasChildren)
-                pprefix = pprefix + "    ";
+                ostream << (utf8 ? HORIZ : "-");
             else
-                pprefix = pprefix + " |  ";
+                ostream << (utf8 ? DOWN_HORIZ : "-");
+
+        } else {
+            if (last)
+                ostream << (utf8 ? ARC_UP_RIGHT : "`");
+            else
+                ostream << (utf8 ? VERT_RIGHT : "|");
+            ostream << (utf8 ? HORIZ : "-");
+        }
+        if (hasChildren)
+            ostream << (utf8 ? DOWN_HORIZ : "-")
+                    << (utf8 ? BULLET : "*") << " ";
+        else
+            ostream << (utf8 ? HORIZ : "-")
+                    << (utf8 ? BULLET : "*") << " ";
+
+        lineLength += 5;
+    }
+
+    ostream << ci.getName() << ",";
+    lineLength += ci.getName().size() + 1;
+
+    if (truncate == 0) {
+        ostream << uri;
+    } else {
+        const string& uriStr = uri.toString();
+        size_t remaining = 0;
+        if (lineLength < truncate)
+            remaining = truncate - lineLength;
+
+        if (remaining > 0) {
+            if (uriStr.size() > remaining) {
+                if (utf8) ostream << ELLIPSIS;
+                else ostream << "_";
+
+                ostream << uriStr.substr(uriStr.size() - remaining + 1,
+                                         uriStr.size());
+            } else {
+                ostream << uriStr;
+            }
+        }
+    }
+    ostream << " " << std::endl;
+
+    if (includeProps && dispProps.size() > 0) {
+        lineLength = 0;
+        string pprefix = prefix;
+        lineLength += prefixCharCount;
+        if (tree) {
+            if (hasChildren) {
+                if (last)
+                    pprefix = pprefix + "  " +
+                        (utf8 ? VERT : "|") + "   ";
+                else
+                    pprefix = pprefix +
+                        (utf8 ? VERT : "|") + " " +
+                        (utf8 ? VERT : "|") + "   ";
+            } else {
+                if (last)
+                    pprefix = pprefix + "      ";
+                else
+                    pprefix = pprefix + (utf8 ? VERT : "|") + "     ";
+
+            }
+            lineLength += 6;
         }
         ostream << pprefix << "{" << std::endl;
         BOOST_FOREACH(dmap::value_type v, dispProps) {
             ostream << pprefix << "  ";
             ostream.width(maxPropName);
-            ostream << std::left << v.first << " : " << v.second << std::endl;
+            ostream << std::left << v.first << " : ";
+            size_t plineLength = lineLength + maxPropName + 5;
+            size_t remaining = 0;
+            if (plineLength < truncate)
+                remaining = truncate - plineLength;
+
+            string& propv = v.second.second;
+            if (truncate == 0 || remaining > 0) {
+                if (truncate != 0 && propv.size() > remaining) {
+                    if (v.second.first) {
+                        if (utf8) ostream << ELLIPSIS;
+                        else ostream << "_";
+                        ostream << propv.substr(propv.size() - remaining + 1,
+                                                propv.size());
+                    } else {
+                        ostream << propv.substr(0, remaining - 1);
+                        if (utf8) ostream << ELLIPSIS;
+                        else ostream << "_";
+                    }
+                } else {
+                    ostream << propv;
+                }
+            }
+            ostream << std::endl;
+
         }
         ostream << pprefix << "}" << std::endl;
     }
 
     for (clsit = children.begin(); clsit != children.end(); ++clsit) {
-        bool lclass = next(clsit) == children.end();
+        bool lclass = boost::next(clsit) == children.end();
         for (cit = clsit->second.begin();
              cit != clsit->second.end(); ++cit) {
 
-            bool islast = lclass && (next(cit) == clsit->second.end());
+            bool islast = lclass && (boost::next(cit) == clsit->second.end());
             string nprefix = prefix;
-            if (tree)
-                nprefix = prefix + (last ? " " : "") + (islast ? " " : " |");
+            size_t nPrefixCharCount = prefixCharCount;
+            if (tree) {
+                nprefix = prefix + (last ? "  " : (utf8 ? VERT : "|") + " ");
+                nPrefixCharCount += 2;
+            }
             displayObject(ostream, clsit->first, *cit,
-                          tree, false, includeProps, islast, nprefix);
+                          tree, false, includeProps, islast, nprefix,
+                          nPrefixCharCount, utf8, truncate);
         }
     }
 }
 
 void MOSerializer::displayMODB(std::ostream& ostream,
-                               bool tree, bool includeProps) {
+                               bool tree, bool includeProps, bool utf8,
+                               size_t truncate) {
     Region::obj_set_t roots;
     getRoots(store, roots);
 
@@ -582,7 +677,7 @@ void MOSerializer::displayMODB(std::ostream& ostream,
         try {
             displayObject(ostream, r.first, r.second,
                           tree, true, includeProps,
-                          true, "");
+                          true, "", 0, utf8, truncate);
         } catch (std::out_of_range e) { }
     }
 }

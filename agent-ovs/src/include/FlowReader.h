@@ -8,16 +8,18 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
+#pragma once
 #ifndef OVSAGENT_FLOWREADER_H_
 #define OVSAGENT_FLOWREADER_H_
 
-#include <boost/function.hpp>
-#include <boost/unordered_map.hpp>
-#include <boost/thread/mutex.hpp>
-
-#include "ovs.h"
 #include "TableState.h"
 #include "SwitchConnection.h"
+
+#include <unordered_map>
+#include <mutex>
+#include <functional>
+
+struct match;
 
 namespace ovsagent {
 
@@ -47,8 +49,7 @@ public:
     /**
      * Callback function to process a list of flow-table entries.
      */
-    typedef boost::function<void
-        (const FlowEntryList&, bool)> FlowCb;
+    typedef std::function<void (const FlowEntryList&, bool)> FlowCb;
 
     /**
      * Get the flow-table entries for specified table.
@@ -69,14 +70,13 @@ public:
      * received
      * @return true if request for getting flows was sent successfully
      */
-    virtual bool getFlows(uint8_t tableId, match *m,
+    virtual bool getFlows(uint8_t tableId, struct match *m,
                           const FlowCb& cb);
 
     /**
      * Callback function to process a list of group-table entries.
      */
-    typedef boost::function<void
-        (const GroupEdit::EntryList&, bool)> GroupCb;
+    typedef std::function<void (const GroupEdit::EntryList&, bool)> GroupCb;
 
     /**
      * Get the group-table entries from switch.
@@ -88,7 +88,7 @@ public:
     virtual bool getGroups(const GroupCb& cb);
 
     /* Interface: MessageHandler */
-    void Handle(SwitchConnection *c, ofptype msgType, ofpbuf *msg);
+    void Handle(SwitchConnection *c, int msgType, ofpbuf *msg);
 
 private:
     /**
@@ -99,7 +99,7 @@ private:
      * all
      * @return flow-table read request
      */
-    ofpbuf *createFlowRequest(uint8_t tableId, match* m = NULL);
+    ofpbuf *createFlowRequest(uint8_t tableId, struct match* m = NULL);
 
     /**
      * Create a request for reading all entries of group-table.
@@ -124,12 +124,11 @@ private:
      * Process the reply message received for a read request
      * and invoke the callback registered for the request.
      *
-     * @param msgType Type of message received
      * @param msg The reply message
      * @param reqMap Map to track requests and callbacks
      */
     template<typename T, typename U, typename V>
-    void handleReply(ofptype msgType, ofpbuf *msg, V& reqMap);
+    void handleReply(ofpbuf *msg, V& reqMap);
 
     /**
      * Extract flow/group entries from the received message.
@@ -144,11 +143,11 @@ private:
 
     SwitchConnection *swConn;
 
-    boost::mutex reqMtx;
+    std::mutex reqMtx;
 
-    typedef boost::unordered_map<ovs_be32, FlowCb> FlowCbMap;
+    typedef std::unordered_map<uint32_t, FlowCb> FlowCbMap;
     FlowCbMap flowRequests;
-    typedef boost::unordered_map<ovs_be32, GroupCb> GroupCbMap;
+    typedef std::unordered_map<uint32_t, GroupCb> GroupCbMap;
     GroupCbMap groupRequests;
 };
 

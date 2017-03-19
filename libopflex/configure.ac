@@ -22,7 +22,7 @@ dnl 1. the version in AC_INIT
 dnl 2. the libtool version in VERSION_INFO
 
 m4_define([sdk_pversion], 1)
-m4_define([sdk_sversion], 1)
+m4_define([sdk_sversion], 4)
 m4_define([sdk_iversion], 0)
 AC_INIT([libopflex], [sdk_pversion.sdk_sversion.sdk_iversion])
 AC_SUBST(SDK_MARKETNAME, ["OpFlex Framework"])
@@ -48,7 +48,7 @@ dnl     then increment age.
 dnl  6. If any interfaces have been removed since the last public
 dnl     release, then set age to 0.
 
-AC_SUBST(VERSION_INFO, [1:0:1])
+AC_SUBST(VERSION_INFO, [3:1:3])
 
 dnl ---------------------------------------------------------------
 dnl Initialization
@@ -62,6 +62,7 @@ LT_INIT()
 m4_include([m4/ax_boost_base.m4])
 m4_include([m4/ax_boost_unit_test_framework.m4])
 m4_include([m4/ax_check_compile_flags.m4])
+m4_include([m4/ax_cxx_compile_stdcxx.m4])
 
 dnl ---------------------------------------------------------------
 dnl Configure options
@@ -103,6 +104,7 @@ AC_PROG_CXX
 AC_PROG_INSTALL
 AM_PROG_AS
 AC_LANG([C++])
+AX_CXX_COMPILE_STDCXX([11], [noext], [optional])
 
 dnl check for compiler flags
 AX_CHECK_COMPILE_FLAG([-Wno-multichar],
@@ -162,6 +164,7 @@ dnl Output
 
 AC_CONFIG_FILES([              \
         Makefile               \
+	debian/changelog       \
         util/Makefile          \
         logging/Makefile       \
         comms/Makefile         \
@@ -179,6 +182,7 @@ AC_CONFIG_FILES([              \
         doc/Doxyfile-internal  \
         rpm/libopflex.spec
 ])
+AC_CONFIG_FILES([debian/rules], [chmod +x debian/rules])
 
 AC_CONFIG_LINKS([
                  comms/test/server.pem:comms/test/server.pem

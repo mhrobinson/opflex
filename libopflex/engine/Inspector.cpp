@@ -51,7 +51,11 @@ void Inspector::start() {
 }
 
 void Inspector::stop() {
-    listener->disconnect();
+    if (listener) {
+        LOG(INFO) << "Shutting down inspector on \"" << name << "\"";
+        listener->disconnect();
+        listener.reset();
+    }
 }
 
 OpflexHandler* Inspector::newHandler(OpflexConnection* conn) {

@@ -11,7 +11,6 @@
 
 #include <list>
 #include <boost/test/unit_test.hpp>
-#include <boost/foreach.hpp>
 #include <boost/assign/list_of.hpp>
 #include <modelgbp/dmtree/Root.hpp>
 #include <opflex/modb/Mutator.h>
@@ -23,9 +22,11 @@
 
 namespace ovsagent {
 
-using boost::shared_ptr;
+using std::shared_ptr;
+using std::unordered_set;
+using std::lock_guard;
+using std::mutex;
 using boost::optional;
-using boost::unordered_set;
 using opflex::modb::Mutator;
 using opflex::modb::URI;
 
@@ -38,20 +39,21 @@ using namespace boost::assign;
 class PolicyFixture : public BaseFixture {
 public:
     PolicyFixture() {
-        shared_ptr<policy::Universe> universe = 
+        shared_ptr<policy::Universe> universe =
             policy::Universe::resolve(framework).get();
 
         Mutator mutator(framework, "policyreg");
         space = universe->addPolicySpace("test");
+        common = universe->addPolicySpace("common");
         fd = space->addGbpFloodDomain("fd");
         bd = space->addGbpBridgeDomain("bd");
         rd = space->addGbpRoutingDomain("rd");
-    
+
         fd->addGbpFloodDomainToNetworkRSrc()
             ->setTargetBridgeDomain(bd->getURI());
         bd->addGbpBridgeDomainToNetworkRSrc()
             ->setTargetRoutingDomain(rd->getURI());
-    
+
         subnetseg2 = space->addGbpSubnets("subnetseg2");
         subnetseg2_1 = subnetseg2->addGbpSubnet("subnetseg2_1");
 
@@ -61,13 +63,13 @@ public:
         fd->addGbpForwardingBehavioralGroupToSubnetsRSrc()
             ->setTargetSubnets(subnetsfd->getURI());
         rd->addGbpRoutingDomainToIntSubnetsRSrc(subnetsfd->getURI().toString());
-    
+
         subnetsbd = space->addGbpSubnets("subnetsbd");
         subnetsbd1 = subnetsbd->addGbpSubnet("subnetsbd1");
         bd->addGbpForwardingBehavioralGroupToSubnetsRSrc()
             ->setTargetSubnets(subnetsbd->getURI());
         rd->addGbpRoutingDomainToIntSubnetsRSrc(subnetsbd->getURI().toString());
-    
+
         subnetsrd = space->addGbpSubnets("subnetsrd");
         subnetsrd1 = subnetsrd->addGbpSubnet("subnetsrd1");
         rd->addGbpForwardingBehavioralGroupToSubnetsRSrc()
@@ -137,6 +139,27 @@ public:
         eg3 = space->addGbpEpGroup("group3");
         eg3->addGbpEpGroupToProvContractRSrc(con1->getURI().toString());
 
+        bd_ext = common->addGbpBridgeDomain("bd_ext");
+        rd_ext = common->addGbpRoutingDomain("rd_ext");
+        fd_ext = common->addGbpFloodDomain("fd_ext");
+
+        fd_ext->addGbpFloodDomainToNetworkRSrc()
+            ->setTargetBridgeDomain(bd_ext->getURI());
+        bd_ext->addGbpBridgeDomainToNetworkRSrc()
+            ->setTargetRoutingDomain(rd_ext->getURI());
+
+        eg_nat = common->addGbpEpGroup("nat-epg");
+        eg_nat->addGbpeInstContext()->setEncapId(0x4242);
+        eg_nat->addGbpEpGroupToNetworkRSrc()
+            ->setTargetFloodDomain(fd_ext->getURI());
+
+        l3ext = rd->addGbpL3ExternalDomain("ext");
+        l3ext_net = l3ext->addGbpL3ExternalNetwork("outside");
+        l3ext_net->addGbpL3ExternalNetworkToNatEPGroupRSrc()
+            ->setTargetEpGroup(eg_nat->getURI());
+        l3ext_net->addGbpExternalSubnet("outside")
+            ->setAddress("0.0.0.0")
+            .setPrefixLen(0);
         mutator.commit();
     }
 
@@ -145,9 +168,13 @@ public:
     }
 
     shared_ptr<policy::Space> space;
+    shared_ptr<policy::Space> common;
     shared_ptr<FloodDomain> fd;
+    shared_ptr<FloodDomain> fd_ext;
     shared_ptr<RoutingDomain> rd;
+    shared_ptr<RoutingDomain> rd_ext;
     shared_ptr<BridgeDomain> bd;
+    shared_ptr<BridgeDomain> bd_ext;
     shared_ptr<Subnets> subnetseg2;
     shared_ptr<Subnet> subnetseg2_1;
     shared_ptr<Subnets> subnetsfd;
@@ -157,10 +184,13 @@ public:
     shared_ptr<Subnet> subnetsbd1;
     shared_ptr<Subnets> subnetsrd;
     shared_ptr<Subnet> subnetsrd1;
+    shared_ptr<L3ExternalDomain> l3ext;
+    shared_ptr<L3ExternalNetwork> l3ext_net;
 
     shared_ptr<EpGroup> eg1;
     shared_ptr<EpGroup> eg2;
     shared_ptr<EpGroup> eg3;
+    shared_ptr<EpGroup> eg_nat;
 
     shared_ptr<L24Classifier> classifier1;
     shared_ptr<L24Classifier> classifier2;
@@ -176,6 +206,55 @@ public:
     shared_ptr<Contract> con2;
 };
 
+class MockListener : public PolicyListener {
+public:
+    MockListener(PolicyManager& pm_) : pm(pm_) {
+        pm.registerListener(this);
+    }
+
+    ~MockListener() {
+        pm.unregisterListener(this);
+    }
+
+    void egDomainUpdated(const opflex::modb::URI& egURI) {
+        onUpdate(egURI);
+    }
+
+    void domainUpdated(opflex::modb::class_id_t,
+                       const opflex::modb::URI& domURI) {
+        onUpdate(domURI);
+    }
+
+    void contractUpdated(const opflex::modb::URI& contractURI) {
+        onUpdate(contractURI);
+    }
+
+    void configUpdated(const opflex::modb::URI& configURI) {
+         onUpdate(configURI);
+    }
+
+    bool hasNotif(const URI& uri) {
+        lock_guard<mutex> guard(notifMutex);
+        return notifRcvd.find(uri) != notifRcvd.end();
+    }
+
+    void clear() {
+        lock_guard<mutex> guard(notifMutex);
+        notifRcvd.clear();
+    }
+
+private:
+    void onUpdate(const URI& uri) {
+        LOG(INFO) << "NOTIF: " << uri;
+        lock_guard<mutex> guard(notifMutex);
+        notifRcvd.insert(uri);
+    }
+
+    PolicyManager& pm;
+    PolicyManager::uri_set_t notifRcvd;
+    mutex notifMutex;
+};
+
 BOOST_AUTO_TEST_SUITE(PolicyManager_test)
 
 static bool hasUriRef(PolicyManager& policyManager,
@@ -183,7 +262,7 @@ static bool hasUriRef(PolicyManager& policyManager,
                       const URI& subnetUri) {
     PolicyManager::subnet_vector_t sv;
     policyManager.getSubnetsForGroup(egUri, sv);
-    BOOST_FOREACH(shared_ptr<Subnet> sn, sv) {
+    for (shared_ptr<Subnet> sn : sv) {
         if (sn->getURI() == subnetUri)
             return true;
     }
@@ -191,24 +270,24 @@ static bool hasUriRef(PolicyManager& policyManager,
 }
 
 BOOST_FIXTURE_TEST_CASE( subnet, PolicyFixture ) {
-    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(), 
+    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(),
                        subnetsfd1->getURI()), 500);
-    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(), 
+    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(),
                        subnetsfd2->getURI()), 500);
-    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(), 
+    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(),
                        subnetsbd1->getURI()), 500);
-    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(), 
+    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg1->getURI(),
                        subnetsrd1->getURI()), 500);
-    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg2->getURI(), 
+    WAIT_FOR(hasUriRef(agent.getPolicyManager(), eg2->getURI(),
                        subnetseg2_1->getURI()), 500);
-    BOOST_CHECK(!hasUriRef(agent.getPolicyManager(), eg1->getURI(), 
+    BOOST_CHECK(!hasUriRef(agent.getPolicyManager(), eg1->getURI(),
                            subnetseg2_1->getURI()));
 }
 
-static bool checkFd(PolicyManager& policyManager, 
+static bool checkFd(PolicyManager& policyManager,
                     const URI& egURI,
                     const URI& domainURI) {
-    optional<shared_ptr<FloodDomain> > rfd = 
+    optional<shared_ptr<FloodDomain> > rfd =
         policyManager.getFDForGroup(egURI);
     if (!rfd) return false;
     URI u = rfd.get()->getURI();
@@ -328,11 +407,11 @@ static bool checkRules(const PolicyManager::rule_list_t& lhs,
         if (!((*li)->getL24Classifier()->getURI() == (*ri)->getURI() &&
               (*li)->getAllow() == *ai &&
               (*li)->getDirection() == dir)) {
-            LOG(INFO) << "\nExpected:\n" 
+            LOG(INFO) << "\nExpected:\n"
                        << (*ri)->getURI()
                        << ", " << *ai
                        << ", " << dir
-                       << "\nGot     :\n" 
+                       << "\nGot     :\n"
                        << (*li)->getL24Classifier()->getURI()
                        << ", " << (*li)->getAllow()
                        << ", " << (*li)->getDirection();
@@ -344,7 +423,7 @@ static bool checkRules(const PolicyManager::rule_list_t& lhs,
         ++ai;
     }
 
-    return matches && li == lhs.end() && 
+    return matches && li == lhs.end() &&
         ri == rhs.end() && ai == rhs_allow.end();
 }
 
@@ -394,6 +473,120 @@ BOOST_FIXTURE_TEST_CASE( contract_rules, PolicyFixture ) {
                            (classifier1)(classifier5),
                            list_of(true)(true)(true)(false),
                            DirectionEnumT::CONST_IN));
+}
+
+BOOST_FIXTURE_TEST_CASE( nat_rd_update, PolicyFixture ) {
+    PolicyManager& pm = agent.getPolicyManager();
+
+    WAIT_FOR(pm.groupExists(eg_nat->getURI()), 500);
+    WAIT_FOR(pm.getFDForGroup(eg_nat->getURI()) != boost::none, 500);
+
+    MockListener lsnr(pm);
+    Mutator m0(framework, "policyreg");
+    shared_ptr<EpGroup> eg_sentinel = space->addGbpEpGroup("group-sentinel");
+    eg_sentinel->addGbpeInstContext()->setEncapId(1);
+    m0.commit();
+    WAIT_FOR(lsnr.hasNotif(eg_sentinel->getURI()), 1500);
+
+    lsnr.clear();
+    Mutator m1(framework, "policyreg");
+    eg_nat->addGbpEpGroupToNetworkRSrc()
+        ->setTargetBridgeDomain(bd_ext->getURI());
+    m1.commit();
+    WAIT_FOR(pm.getFDForGroup(eg_nat->getURI()) == boost::none, 500);
+    WAIT_FOR(lsnr.hasNotif(rd->getURI()), 1500);
+
+    lsnr.clear();
+    eg_nat->addGbpeInstContext()->setEncapId(0x22);
+    m1.commit();
+    WAIT_FOR(pm.getVnidForGroup(eg_nat->getURI()).get() == 0x22, 500);
+    WAIT_FOR(lsnr.hasNotif(rd->getURI()), 1500);
+}
+
+BOOST_FIXTURE_TEST_CASE( group_unknown_contract, PolicyFixture ) {
+    PolicyManager& pm = agent.getPolicyManager();
+    URI con_unk_uri("unknown-contract");
+
+    // Provide an unknown contract
+    Mutator m0(framework, "policyreg");
+    eg1->addGbpEpGroupToProvContractRSrc(con_unk_uri.toString());
+    m0.commit();
+    WAIT_FOR(pm.contractExists(con_unk_uri), 500);
+    PolicyManager::uri_set_t egs;
+    WAIT_FOR_DO(egs.size() == 1, 500,
+            egs.clear(); pm.getContractProviders(con_unk_uri, egs));
+
+    // Make sure unknown-contract remains despite changes to other contracts
+    shared_ptr<Contract> con3 = space->addGbpContract("contract3");
+    m0.commit();
+    WAIT_FOR(pm.contractExists(con3->getURI()) == true, 500);
+    BOOST_CHECK(pm.contractExists(con_unk_uri));
+    egs.clear();
+    pm.getContractProviders(con_unk_uri, egs);
+    BOOST_CHECK(egs.size() == 1);
+
+    // Ensure unknown contract is removed when provider is removed
+    eg1->addGbpEpGroupToProvContractRSrc(con_unk_uri.toString())
+        ->unsetTarget();
+    m0.commit();
+    WAIT_FOR(!pm.contractExists(con_unk_uri), 500);
+}
+
+BOOST_FIXTURE_TEST_CASE( group_contract_remove, PolicyFixture ) {
+    PolicyManager& pm = agent.getPolicyManager();
+    WAIT_FOR(pm.contractExists(con2->getURI()), 500);
+
+    // Remove contract and references from groups
+    Mutator m0(framework, "policyreg");
+    con2->remove();
+    eg1->addGbpEpGroupToProvContractRSrc(con2->getURI().toString())
+        ->unsetTarget();
+    eg2->addGbpEpGroupToConsContractRSrc(con2->getURI().toString())
+        ->unsetTarget();
+    m0.commit();
+    WAIT_FOR(!pm.contractExists(con2->getURI()), 500);
+}
+
+BOOST_FIXTURE_TEST_CASE( group_contract_remove_add, PolicyFixture ) {
+    // Remove contract, then add it back. Expect the providers/consumers to
+    // remain the same as prior to remove.
+    PolicyManager& pm = agent.getPolicyManager();
+    WAIT_FOR(pm.contractExists(con1->getURI()), 500);
+
+    PolicyManager::uri_set_t egs;
+    WAIT_FOR_DO(egs.size() == 2, 500,
+            egs.clear(); pm.getContractProviders(con1->getURI(), egs));
+
+    egs.clear();
+    WAIT_FOR_DO(egs.size() == 1, 500,
+            egs.clear(); pm.getContractConsumers(con1->getURI(), egs));
+
+    // Remove contract
+    PolicyManager::rule_list_t rules;
+    WAIT_FOR_DO(!rules.empty(), 500,
+        pm.getContractRules(con1->getURI(), rules));
+    Mutator m0(framework, "policyreg");
+    con1->addGbpSubject("1_subject2")->remove();
+    con1->addGbpSubject("1_subject1")->remove();
+    con1->remove();
+    m0.commit();
+    WAIT_FOR_DO(rules.empty(), 500,
+        rules.clear(); pm.getContractRules(con1->getURI(), rules));
+    BOOST_CHECK(pm.contractExists(con1->getURI()));
+
+    // Add contract back
+    con1 = space->addGbpContract("contract1");
+    m0.commit();
+
+    egs.clear();
+    WAIT_FOR_DO(egs.size() == 2, 500,
+            egs.clear(); pm.getContractProviders(con1->getURI(), egs));
+    egs.clear();
+    WAIT_FOR_DO(egs.size() == 1, 500,
+            egs.clear(); pm.getContractConsumers(con1->getURI(), egs));
+
+    pm.getContractRules(con1->getURI(), rules);
+    BOOST_CHECK(rules.size() == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

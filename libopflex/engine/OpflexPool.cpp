@@ -14,7 +14,6 @@
 #  include <config.h>
 #endif
 
-
 #include <memory>
 #include <vector>
 
@@ -33,12 +32,12 @@ using std::make_pair;
 using std::string;
 using ofcore::OFConstants;
 using ofcore::PeerStatusListener;
-#ifndef SIMPLE_RPC
 using yajr::transport::ZeroCopyOpenSSL;
-#endif
 
-OpflexPool::OpflexPool(HandlerFactory& factory_)
-    : factory(factory_), active(false), curHealth(PeerStatusListener::DOWN) {
+OpflexPool::OpflexPool(HandlerFactory& factory_,
+                       util::ThreadManager& threadManager_)
+    : factory(factory_), threadManager(threadManager_),
+      active(false), curHealth(PeerStatusListener::DOWN) {
     uv_mutex_init(&conn_mutex);
     uv_key_create(&conn_mutex_key);
 }
@@ -59,20 +58,39 @@ void OpflexPool::setLocation(const std::string& location) {
 }
 
 void OpflexPool::enableSSL(const std::string& caStorePath,
+                           const std::string& keyAndCertFilePath,
+                           const std::string& passphrase,
                            bool verifyPeers) {
-#ifndef SIMPLE_RPC
     OpflexConnection::initSSL();
-    clientCtx.reset(ZeroCopyOpenSSL::Ctx::createCtx(caStorePath.c_str(), NULL));
+    clientCtx.reset(ZeroCopyOpenSSL::Ctx::createCtx(caStorePath.c_str(),
+                keyAndCertFilePath.c_str(),
+                passphrase.c_str()));
     if (!clientCtx.get())
         throw std::runtime_error("Could not enable SSL");
-#endif
+
+    if (verifyPeers)
+        clientCtx.get()->setVerify();
+    else
+        clientCtx.get()->setNoVerify();
 }
 
+void OpflexPool::enableSSL(const std::string& caStorePath,
+                           bool verifyPeers) {
+    OpflexConnection::initSSL();
+    clientCtx.reset(ZeroCopyOpenSSL::Ctx::createCtx(caStorePath.c_str()));
+    if (!clientCtx.get())
+        throw std::runtime_error("Could not enable SSL");
+
+    if (verifyPeers)
+        clientCtx.get()->setVerify();
+    else
+        clientCtx.get()->setNoVerify();
+}
 
 void OpflexPool::on_conn_async(uv_async_t* handle) {
     OpflexPool* pool = (OpflexPool*)handle->data;
     if (pool->active) {
-        util::RecursiveLockGuard guard(&pool->conn_mutex, 
+        util::RecursiveLockGuard guard(&pool->conn_mutex,
                                        &pool->conn_mutex_key);
         BOOST_FOREACH(conn_map_t::value_type& v, pool->connections) {
             v.second.conn->connect();
@@ -83,7 +101,7 @@ void OpflexPool::on_conn_async(uv_async_t* handle) {
 void OpflexPool::on_cleanup_async(uv_async_t* handle) {
     OpflexPool* pool = (OpflexPool*)handle->data;
     {
-        util::RecursiveLockGuard guard(&pool->conn_mutex, 
+        util::RecursiveLockGuard guard(&pool->conn_mutex,
                                        &pool->conn_mutex_key);
         conn_map_t conns(pool->connections);
         BOOST_FOREACH(conn_map_t::value_type& v, conns) {
@@ -96,17 +114,12 @@ void OpflexPool::on_cleanup_async(uv_async_t* handle) {
     uv_close((uv_handle_t*)&pool->writeq_async, NULL);
     uv_close((uv_handle_t*)&pool->conn_async, NULL);
     uv_close((uv_handle_t*)handle, NULL);
-#ifdef SIMPLE_RPC
-    uv_timer_stop(&pool->timer);
-    uv_close((uv_handle_t*)&pool->timer, NULL);
-#else
-    yajr::finiLoop(&pool->client_loop);
-#endif
+    yajr::finiLoop(pool->client_loop);
 }
 
 void OpflexPool::on_writeq_async(uv_async_t* handle) {
     OpflexPool* pool = (OpflexPool*)handle->data;
-    util::RecursiveLockGuard guard(&pool->conn_mutex, 
+    util::RecursiveLockGuard guard(&pool->conn_mutex,
                                    &pool->conn_mutex_key);
     BOOST_FOREACH(conn_map_t::value_type& v, pool->connections) {
         v.second.conn->processWriteQueue();
@@ -117,27 +130,17 @@ void OpflexPool::start() {
     if (active) return;
     active = true;
 
-    uv_loop_init(&client_loop);
-#ifdef SIMPLE_RPC
-    timer.data = this;
-    uv_timer_init(&client_loop, &timer);
-    uv_timer_start(&timer, on_timer, 5000, 5000);
-#else
-    yajr::initLoop(&client_loop);
-#endif
+    client_loop = threadManager.initTask("connection_pool");
+    yajr::initLoop(client_loop);
 
     conn_async.data = this;
     cleanup_async.data = this;
     writeq_async.data = this;
-    uv_async_init(&client_loop, &conn_async, on_conn_async);
-    uv_async_init(&client_loop, &cleanup_async, on_cleanup_async);
-    uv_async_init(&client_loop, &writeq_async, on_writeq_async);
+    uv_async_init(client_loop, &conn_async, on_conn_async);
+    uv_async_init(client_loop, &cleanup_async, on_cleanup_async);
+    uv_async_init(client_loop, &writeq_async, on_writeq_async);
 
-    int rc = uv_thread_create(&client_thread, client_thread_func, this);
-    if (rc < 0) {
-        throw std::runtime_error(string("Could not create client thread: ") +
-                                 uv_strerror(rc));
-    }
+    threadManager.startTask("connection_pool");
 }
 
 void OpflexPool::stop() {
@@ -145,8 +148,7 @@ void OpflexPool::stop() {
     active = false;
 
     uv_async_send(&cleanup_async);
-    uv_thread_join(&client_thread);
-    uv_loop_close(&client_loop);
+    threadManager.stopTask("connection_pool");
 }
 
 void OpflexPool::setOpflexIdentity(const std::string& name,
@@ -170,28 +172,26 @@ OpflexPool::registerPeerStatusListener(PeerStatusListener* listener) {
 
 void OpflexPool::updatePeerStatus(const std::string& hostname, int port,
                                   PeerStatusListener::PeerStatus status) {
-    PeerStatusListener::Health newHealth = PeerStatusListener::HEALTHY;
+    PeerStatusListener::Health newHealth = PeerStatusListener::DOWN;
     bool notifyHealth = false;
-    bool hasConnection = false;
+    bool hasReadyConnection = false;
+    bool hasDegradedConnection = false;
     {
         util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
         BOOST_FOREACH(conn_map_t::value_type& v, connections) {
-            hasConnection = true;
-            if (!v.second.conn->isReady()) {
-                switch (newHealth) {
-                case PeerStatusListener::HEALTHY:
-                    newHealth = PeerStatusListener::DEGRADED;
-                    break;
-                case PeerStatusListener::DEGRADED:
-                case PeerStatusListener::DOWN:
-                default:
-                    newHealth = PeerStatusListener::DOWN;
-                    break;
-                }
-            }
+            if (v.second.conn->isReady())
+                hasReadyConnection = true;
+            else
+                hasDegradedConnection = true;
+
         }
-        if (!hasConnection)
-            newHealth = PeerStatusListener::DOWN;
+
+        if (hasReadyConnection) {
+            newHealth = PeerStatusListener::HEALTHY;
+            if (hasDegradedConnection)
+                newHealth = PeerStatusListener::DEGRADED;
+        }
+
         if (newHealth != curHealth) {
             notifyHealth = true;
             curHealth = newHealth;
@@ -203,13 +203,18 @@ void OpflexPool::updatePeerStatus(const std::string& hostname, int port,
     }
 
     if (notifyHealth) {
+        LOG(DEBUG) << "Health updated to: "
+                   << ((newHealth == PeerStatusListener::HEALTHY)
+                       ? "HEALTHY"
+                       : ((newHealth == PeerStatusListener::DEGRADED)
+                          ? "DEGRADED" : "DOWN"));
         BOOST_FOREACH(PeerStatusListener* l, peerStatusListeners) {
             l->healthUpdated(newHealth);
         }
     }
 }
 
-OpflexClientConnection* OpflexPool::getPeer(const std::string& hostname, 
+OpflexClientConnection* OpflexPool::getPeer(const std::string& hostname,
                                             int port) {
     util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
     conn_map_t::iterator it = connections.find(make_pair(hostname, port));
@@ -239,7 +244,7 @@ void OpflexPool::doAddPeer(const std::string& hostname, int port) {
         LOG(INFO) << "Adding peer "
                   << hostname << ":" << port;
 
-        OpflexClientConnection* conn = 
+        OpflexClientConnection* conn =
             new OpflexClientConnection(factory, this, hostname, port);
         cd.conn = conn;
     }
@@ -334,28 +339,6 @@ OpflexPool::getMasterForRole(OFConstants::OpflexRole role) {
     return NULL;
 }
 
-void OpflexPool::client_thread_func(void* pool_) {
-    OpflexPool* pool = (OpflexPool*)pool_;
-    uv_run(&pool->client_loop, UV_RUN_DEFAULT);
-}
-
-#ifdef SIMPLE_RPC
-void OpflexPool::on_conn_closed(OpflexClientConnection* conn) {
-    std::string host = conn->getHostname();
-    int port = conn->getPort();
-    bool retry = conn->shouldRetry();
-    OpflexPool* pool = conn->getPool();
-    conn->getPool()->connectionClosed(conn);
-    if (retry && pool->active)
-        pool->doAddPeer(host, port);
-}
-
-void OpflexPool::on_timer(uv_timer_t* timer) {
-    OpflexPool* pool = (OpflexPool*)timer->data;
-    on_conn_async(&pool->conn_async);
-}
-#endif
-
 void OpflexPool::connectionClosed(OpflexClientConnection* conn) {
     util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
 
@@ -378,7 +361,12 @@ void OpflexPool::messagesReady() {
 size_t OpflexPool::sendToRole(OpflexMessage* message,
                            OFConstants::OpflexRole role,
                            bool sync) {
+#ifdef HAVE_CXX11
+    std::unique_ptr<OpflexMessage> messagep(message);
+#else
     std::auto_ptr<OpflexMessage> messagep(message);
+#endif
+
     if (!active) return 0;
     std::vector<OpflexClientConnection*> conns;
 
@@ -386,7 +374,7 @@ size_t OpflexPool::sendToRole(OpflexMessage* message,
     role_map_t::iterator it = roles.find(role);
     if (it == roles.end())
         return 0;
-        
+
     size_t i = 0;
     OpflexMessage* m_copy = NULL;
     std::vector<OpflexClientConnection*> ready;

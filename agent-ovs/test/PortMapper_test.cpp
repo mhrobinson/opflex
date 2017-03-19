@@ -10,10 +10,15 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include "ovs.h"
 #include "SwitchConnection.h"
 #include "PortMapper.h"
 #include "logging.h"
+#include "ovs-ofputil.h"
+
+extern "C" {
+#include <openvswitch/ofp-msgs.h>
+#include <openvswitch/list.h>
+}
 
 using namespace std;
 using namespace ovsagent;
@@ -26,10 +31,10 @@ public:
         ofpbuf_delete(lastSentMsg);
     }
 
-    ofp_version GetProtocolVersion() { return OFP13_VERSION; }
+    int GetProtocolVersion() { return OFP13_VERSION; }
 
     int SendMessage(ofpbuf *msg) {
-        ofp_header *hdr = (ofp_header *)ofpbuf_data(msg);
+        ofp_header *hdr = (ofp_header *)msg->data;
         ofptype typ;
         ofptype_decode(&typ, hdr);
         BOOST_CHECK(typ == OFPTYPE_PORT_DESC_STATS_REQUEST);
@@ -42,10 +47,18 @@ public:
     ofpbuf *lastSentMsg;
 };
 
+// for some reason this type has been moved out of OVS headers
+struct ofp11_stats_msg {
+    struct ofp_header header;
+    ovs_be16 type;              /* One of the OFPST_* constants. */
+    ovs_be16 flags;             /* OFPSF_REQ_* flags (none yet defined). */
+    uint8_t pad[4];
+    /* Followed by the body of the request. */
+};
+
 class MockListener : public PortStatusListener {
 public:
-    void portStatusUpdate(const string& portName, uint32_t portNo,
-                          bool fromDesc) {
+    void portStatusUpdate(const string& portName, uint32_t portNo, bool) {
         lastPortName = portName;
         lastPortNo = portNo;
     }
@@ -74,27 +87,25 @@ public:
     }
 
     void SetReplyFlags(ofp_header *reply, uint16_t flags) {
-        if ((ofp_version)reply->version == OFP10_VERSION) {
-            ((struct ofp10_stats_msg *) reply)->flags = htons(flags);
-        } else {
+        if ((ofp_version)reply->version > OFP10_VERSION) {
             ((struct ofp11_stats_msg *) reply)->flags = htons(flags);
         }
     }
 
     ofpbuf *MakeReplyMsg(size_t startIdx, size_t endIdx, bool more) {
         ovs_list replies;
-        ofpmp_init(&replies, (ofp_header *)ofpbuf_data(conn.lastSentMsg));
+        ofpmp_init(&replies, (ofp_header *)conn.lastSentMsg->data);
         for (size_t i = startIdx; i < endIdx && i < ports.size(); ++i) {
             ofputil_append_port_desc_stats_reply(&ports[i], &replies);
         }
-        assert(list_size(&replies) == 1);
+        assert(ovs_list_size(&replies) == 1);
 
         ofpbuf *reply;
         LIST_FOR_EACH (reply, list_node, &replies) {
-            list_remove(&reply->list_node);
+            ovs_list_remove(&reply->list_node);
 
             ofpmsg_update_length(reply);
-            ofp_header *replyHdr = (ofp_header *)ofpbuf_data(reply);
+            ofp_header *replyHdr = (ofp_header *)reply->data;
             ofptype typ;
             ofptype_decode(&typ, replyHdr);
             BOOST_CHECK(typ == OFPTYPE_PORT_DESC_STATS_REPLY);
@@ -109,13 +120,14 @@ public:
 
     ofpbuf *MakePortStatusMsg(int portIdx, ofp_port_reason reas) {
         ofputil_port_status ps = {reas, ports[portIdx]};
-        return ofputil_encode_port_status(&ps,
-                ofputil_protocol_from_ofp_version(conn.GetProtocolVersion()));
+        return ofputil_encode_port_status
+            (&ps, ofputil_protocol_from_ofp_version
+             ((ofp_version)conn.GetProtocolVersion()));
     }
 
     void Received(PortMapper& pm, ofpbuf *msg) {
         ofptype t;
-        ofptype_decode(&t, (ofp_header *)ofpbuf_data(msg));
+        ofptype_decode(&t, (ofp_header *)msg->data);
         pm.Handle(&conn, t, msg);
         ofpbuf_delete(msg);
     }

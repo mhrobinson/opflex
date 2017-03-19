@@ -11,6 +11,7 @@
 
 #include <opflex/modb/ObjectListener.h>
 #include <modelgbp/ascii/StringMatchTypeEnumT.hpp>
+#include <modelgbp/gbp/RoutingModeEnumT.hpp>
 #include <boost/test/unit_test.hpp>
 #include <boost/filesystem/fstream.hpp>
 
@@ -23,6 +24,7 @@ namespace ovsagent {
 
 using std::string;
 using std::vector;
+using std::shared_ptr;
 using opflex::modb::ObjectListener;
 using opflex::modb::class_id_t;
 using opflex::modb::URI;
@@ -31,7 +33,6 @@ using opflex::modb::URIBuilder;
 using opflex::modb::Mutator;
 using opflex::ofcore::OFFramework;
 using boost::optional;
-using boost::shared_ptr;
 
 namespace fs = boost::filesystem;
 using namespace modelgbp;
@@ -57,7 +58,7 @@ public:
 class EndpointFixture : public BaseFixture, public ObjectListener {
 public:
     EndpointFixture()
-        : BaseFixture(), 
+        : BaseFixture(),
           epSource(&agent.getEndpointManager()),
           bduri("/PolicyUniverse/PolicySpace/test/GbpBridgeDomain/bd/"),
           rduri("/PolicyUniverse/PolicySpace/test/GbpRoutingDomain/rd/") {
@@ -146,7 +147,7 @@ public:
         // writing the referenced object in response to any changes
 
         Mutator mutator(framework, "policyreg");
-            
+
         switch (class_id) {
         case EndPointToGroupRSrc::CLASS_ID:
             {
@@ -205,7 +206,7 @@ public:
 
 class FSEndpointFixture : public EndpointFixture {
 public:
-    FSEndpointFixture() 
+    FSEndpointFixture()
         : EndpointFixture(),
           temp(fs::temp_directory_path() / fs::unique_path()) {
         fs::create_directory(temp);
@@ -221,12 +222,17 @@ public:
 BOOST_AUTO_TEST_SUITE(EndpointManager_test)
 
 template<typename T>
-bool hasEPREntry(OFFramework& framework, const URI& uri) {
-    return T::resolve(framework, uri);
+bool hasEPREntry(OFFramework& framework, const URI& uri,
+                 const boost::optional<std::string>& uuid = boost::none) {
+    boost::optional<std::shared_ptr<T> > entry =
+        T::resolve(framework, uri);
+    if (!entry) return false;
+    if (uuid) return (entry.get()->getUuid("") == uuid);
+    return true;
 }
 
 static int getEGSize(EndpointManager& epManager, URI& epgu) {
-    boost::unordered_set<std::string> epUuids;
+    std::unordered_set<std::string> epUuids;
     epManager.getEndpointsForGroup(epgu, epUuids);
     return epUuids.size();
 }
@@ -255,11 +261,19 @@ BOOST_FIXTURE_TEST_CASE( basic, EndpointFixture ) {
     epSource.updateEndpoint(ep1);
     epSource.updateEndpoint(ep2);
 
-    boost::unordered_set<std::string> epUuids;
+    std::unordered_set<std::string> epUuids;
     agent.getEndpointManager().getEndpointsForGroup(epgu, epUuids);
     BOOST_CHECK_EQUAL(2, epUuids.size());
     BOOST_CHECK(epUuids.find(ep1.getUUID()) != epUuids.end());
     BOOST_CHECK(epUuids.find(ep2.getUUID()) != epUuids.end());
+
+    epSource.removeEndpoint(ep2.getUUID());
+    epUuids.clear();
+    agent.getEndpointManager().getEndpointsForGroup(epgu, epUuids);
+    BOOST_CHECK_EQUAL(1, epUuids.size());
+    BOOST_CHECK(epUuids.find(ep1.getUUID()) != epUuids.end());
+
+    epSource.updateEndpoint(ep2);
 
     URI l2epr1 = URIBuilder()
         .addElement("EprL2Universe")
@@ -305,6 +319,18 @@ BOOST_FIXTURE_TEST_CASE( basic, EndpointFixture ) {
     WAIT_FOR(hasEPREntry<L3Ep>(framework, l3epr1_3), 500);
     WAIT_FOR(hasEPREntry<L3Ep>(framework, l3epr2_4), 500);
     WAIT_FOR(hasEPREntry<L3Ep>(framework, l3epr2_ipm), 500);
+
+    Mutator mutator(framework, "policyreg");
+    optional<shared_ptr<BridgeDomain> > bd =
+        BridgeDomain::resolve(framework, bduri);
+    BOOST_REQUIRE(bd);
+    bd.get()->setRoutingMode(RoutingModeEnumT::CONST_DISABLED);
+    mutator.commit();
+
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr1_2), 500);
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr1_3), 500);
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr2_4), 500);
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr2_ipm), 500);
 }
 
 BOOST_FIXTURE_TEST_CASE( epgmapping, EndpointFixture ) {
@@ -321,7 +347,7 @@ BOOST_FIXTURE_TEST_CASE( epgmapping, EndpointFixture ) {
     epSource.updateEndpoint(ep2);
 
     WAIT_FOR(1 == getEGSize(agent.getEndpointManager(), epgu), 500);
-    boost::unordered_set<std::string> epUuids;
+    std::unordered_set<std::string> epUuids;
     agent.getEndpointManager().getEndpointsForGroup(epgu, epUuids);
     BOOST_CHECK(epUuids.find(ep2.getUUID()) != epUuids.end());
 
@@ -335,7 +361,7 @@ BOOST_FIXTURE_TEST_CASE( epgmapping, EndpointFixture ) {
         .addElement("EprL3Ep")
         .addElement(rduri.toString())
         .addElement("10.1.1.4").build();
-                    
+
     WAIT_FOR(hasEPREntry<L2Ep>(framework, l2epr2), 500);
     WAIT_FOR(hasEPREntry<L3Ep>(framework, l3epr2_4), 500);
 
@@ -411,7 +437,8 @@ BOOST_FIXTURE_TEST_CASE( epgmapping, EndpointFixture ) {
 BOOST_FIXTURE_TEST_CASE( fssource, FSEndpointFixture ) {
 
     // check already existing
-    fs::ofstream os(temp / "83f18f0b-80f7-46e2-b06c-4d9487b0c754.ep");
+    fs::path path1(temp / "83f18f0b-80f7-46e2-b06c-4d9487b0c754.ep");
+    fs::ofstream os(path1);
     os << "{"
        << "\"uuid\":\"83f18f0b-80f7-46e2-b06c-4d9487b0c754\","
        << "\"mac\":\"10:ff:00:a3:01:00\","
@@ -422,8 +449,10 @@ BOOST_FIXTURE_TEST_CASE( fssource, FSEndpointFixture ) {
        << "}" << std::endl;
     os.close();
 
-    FSEndpointSource source(&agent.getEndpointManager(),
+    FSWatcher watcher;
+    FSEndpointSource source(&agent.getEndpointManager(), watcher,
                              temp.string());
+    watcher.start();
 
     URI l2epr = URIBuilder()
         .addElement("EprL2Universe")
@@ -463,13 +492,40 @@ BOOST_FIXTURE_TEST_CASE( fssource, FSEndpointFixture ) {
        << "\"attributes\":{\"attr2\":\"value2\"}"
        << "}" << std::endl;
     os2.close();
-    
+
     WAIT_FOR(hasEPREntry<L2Ep>(framework, l2epr2), 500);
 
     // check for removing an endpoint
     fs::remove(path2);
 
     WAIT_FOR(!hasEPREntry<L2Ep>(framework, l2epr2), 500);
+
+    // check for overwriting existing file with new ep
+    fs::ofstream os3(path1);
+    std::string uuid3("83f18f0b-80f7-46e2-b06c-4d9487b0c756");
+    os3 << "{"
+        << "\"uuid\":\"" << uuid3 << "\","
+        << "\"mac\":\"10:ff:00:a3:01:02\","
+        << "\"ip\":[\"10.0.0.4\"],"
+        << "\"interface-name\":\"veth0\","
+        << "\"endpoint-group\":\"/PolicyUniverse/PolicySpace/test/GbpEpGroup/epg/\","
+        << "\"attributes\":{\"attr1\":\"value1\"}"
+        << "}" << std::endl;
+    os3.close();
+
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr_1), 500);
+    WAIT_FOR(!hasEPREntry<L3Ep>(framework, l3epr_2), 500);
+    WAIT_FOR(!hasEPREntry<L2Ep>(framework, l2epr), 500);
+
+    URI l2epr3 = URIBuilder()
+        .addElement("EprL2Universe")
+        .addElement("EprL2Ep")
+        .addElement(bduri.toString())
+        .addElement(MAC("10:ff:00:a3:01:02")).build();
+
+    WAIT_FOR(hasEPREntry<L2Ep>(framework, l2epr3, uuid3), 500);
+
+    watcher.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

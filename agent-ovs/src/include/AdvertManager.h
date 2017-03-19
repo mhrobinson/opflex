@@ -12,20 +12,18 @@
 #ifndef OVSAGENT_ADVERTMANAGER_H
 #define OVSAGENT_ADVERTMANAGER_H
 
-#include <boost/noncopyable.hpp>
-#include <boost/asio/deadline_timer.hpp>
-#include <boost/random/mersenne_twister.hpp>
-#include <boost/random/uniform_int_distribution.hpp>
-#include <boost/random/random_device.hpp>
-#include <boost/random/variate_generator.hpp>
-#include <boost/scoped_ptr.hpp>
-
 #include "Agent.h"
 #include "PortMapper.h"
 
+#include <boost/noncopyable.hpp>
+#include <boost/asio/deadline_timer.hpp>
+
+#include <mutex>
+#include <random>
+
 namespace ovsagent {
 
-class FlowManager;
+class IntFlowManager;
 
 /**
  * Class that handles generating all unsolicited advertisements with
@@ -37,7 +35,7 @@ public:
     /**
      * Construct a AdvertManager
      */
-    AdvertManager(Agent& agent, FlowManager& flowManager);
+    AdvertManager(Agent& agent, IntFlowManager& intFlowManager);
 
     /**
      * Set the port mapper to use
@@ -58,19 +56,38 @@ public:
     void registerConnection(SwitchConnection* c) { switchConnection = c; }
 
     /**
-     * Unset the switch connection
-     */
-    void unregisterConnection() { switchConnection = NULL; }
-
-    /**
      * Enable router advertisements
      */
     void enableRouterAdv(bool enabled) { sendRouterAdv = enabled; }
 
     /**
+     * Modes for sending endpoint advertisements
+     */
+    enum EndpointAdvMode {
+        /**
+         * Disable sending endpoint advertisements
+         */
+        EPADV_DISABLED,
+        /**
+         * Send gratuitous endpoint advertisements as unicast packets
+         * to the router mac.
+         */
+        EPADV_GRATUITOUS_UNICAST,
+        /**
+         * Broadcast gratuitous endpoint advertisements.
+         */
+        EPADV_GRATUITOUS_BROADCAST,
+        /**
+         * Unicast a spoofed request/solicitation for the subnet's
+         * gateway router.
+         */
+        EPADV_ROUTER_REQUEST
+    };
+
+    /**
      * Enable gratuitous endpoint advertisements
      */
-    void enableEndpointAdv(bool enabled) { sendEndpointAdv = enabled; }
+    void enableEndpointAdv(EndpointAdvMode mode) { sendEndpointAdv = mode; }
 
     /**
      * Module start
@@ -89,8 +106,11 @@ public:
 
     /**
      * Schedule a round of initial endpoint advertisements
+     *
+     * @param delay number of milliseconds to delay before sending
+     * advertisements
      */
-    void scheduleInitialEndpointAdv();
+    void scheduleInitialEndpointAdv(uint64_t delay = 10000);
 
     /**
      * Schedule endpoint advertisements for a specific endpoint
@@ -99,11 +119,18 @@ public:
      */
     void scheduleEndpointAdv(const std::string& uuid);
 
+    /**
+     * Schedule endpoint advertisements for a set of endpoints
+     *
+     * @param uuids the uuids of the endpoints
+     */
+    void scheduleEndpointAdv(const std::unordered_set<std::string>& uuids);
+
 private:
-    boost::random::random_device rng;
-    boost::random::mt19937 urng;
-    boost::random::variate_generator<boost::random::mt19937&,
-                                     boost::random::uniform_int_distribution<> > gen;
+    std::random_device rng;
+    std::mt19937 urng;
+    std::uniform_int_distribution<> all_ep_dis;
+    std::uniform_int_distribution<> repeat_dis;
 
     /**
      * Synchronously send router advertisements for all active virtual
@@ -116,7 +143,7 @@ private:
      */
     bool sendRouterAdv;
     void onRouterAdvTimer(const boost::system::error_code& ec);
-    boost::scoped_ptr<boost::asio::deadline_timer> routerAdvTimer;
+    std::unique_ptr<boost::asio::deadline_timer> routerAdvTimer;
     volatile int initialRouterAdvs;
 
     /**
@@ -136,16 +163,18 @@ private:
     /**
      * Timer callback for gratuitious endpoint advertisements
      */
-    bool sendEndpointAdv;
+    EndpointAdvMode sendEndpointAdv;
     void onEndpointAdvTimer(const boost::system::error_code& ec);
     void onAllEndpointAdvTimer(const boost::system::error_code& ec);
-    boost::scoped_ptr<boost::asio::deadline_timer> endpointAdvTimer;
-    boost::scoped_ptr<boost::asio::deadline_timer> allEndpointAdvTimer;
-    boost::mutex ep_mutex;
-    boost::unordered_set<std::string> pendingEps;
+    void doScheduleEpAdv(uint64_t time = 250);
+    std::unique_ptr<boost::asio::deadline_timer> endpointAdvTimer;
+    std::unique_ptr<boost::asio::deadline_timer> allEndpointAdvTimer;
+    std::mutex ep_mutex;
+    typedef std::unordered_map<std::string, uint8_t> pending_ep_map_t;
+    pending_ep_map_t pendingEps;
 
     Agent& agent;
-    FlowManager& flowManager;
+    IntFlowManager& intFlowManager;
     PortMapper* portMapper;
     SwitchConnection* switchConnection;
     boost::asio::io_service* ioService;

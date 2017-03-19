@@ -22,7 +22,6 @@
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
-#include <boost/unordered_set.hpp>
 #include <uv.h>
 
 #include "opflex/modb/internal/ObjectStore.h"
@@ -32,6 +31,8 @@
 #include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/engine/internal/MOSerializer.h"
 #include "opflex/engine/internal/AbstractObjectListener.h"
+
+#include "ThreadManager.h"
 
 namespace opflex {
 namespace engine {
@@ -51,7 +52,8 @@ public:
      * Construct a processor associated with the given object store
      * @param store the modb::ObjectStore
      */
-    Processor(modb::ObjectStore* store);
+    Processor(modb::ObjectStore* store,
+              util::ThreadManager& threadManager);
 
     /**
      * Destroy the processor
@@ -92,7 +94,26 @@ public:
      * @param verifyPeers set to true to verify that peer certificates
      * properly chain to a trusted root
      */
-    void enableSSL(const std::string& caStorePath, bool verifyPeers = true);
+    void enableSSL(const std::string& caStorePath,
+                   bool verifyPeers = true);
+
+    /**
+     * Enable SSL for connections to opflex peers
+     *
+     * @param caStorePath the filesystem path to a directory
+     * containing CA certificates, or to a file containing a specific
+     * CA certificate.
+     * @param keyAndCertFilePath the path to the PEM file for this peer,
+     * containing its certificate and its private key, possibly encrypted.
+     * @param passphrase the passphrase to be used to decrypt the private
+     * key within this peer's PEM file
+     * @param verifyPeers set to true to verify that peer certificates
+     * properly chain to a trusted root
+     */
+    void enableSSL(const std::string& caStorePath,
+                   const std::string& keyAndCertFilePath,
+                   const std::string& passphrase,
+                   bool verifyPeers = true);
 
     /**
      * Add an OpFlex peer.
@@ -203,6 +224,11 @@ private:
     internal::MOSerializer serializer;
 
     /**
+     * Thread manager
+     */
+    util::ThreadManager& threadManager;
+
+    /**
      * The pool of Opflex connections
      */
     internal::OpflexPool pool;
@@ -262,7 +288,7 @@ private:
         /**
          * Outgoing URI references
          */
-        boost::unordered_set<modb::reference_t> urirefs;
+        OF_UNORDERED_SET<modb::reference_t> urirefs;
 
         /**
          * Whether the item was written locally
@@ -413,14 +439,13 @@ private:
     /**
      * Processing thread
      */
-    uv_loop_t proc_loop;
-    uv_thread_t proc_thread;
+    uv_loop_t* proc_loop;
     volatile bool proc_active;
     uv_async_t cleanup_async;
     uv_async_t proc_async;
     uv_async_t connect_async;
     uv_timer_t proc_timer;
-    static void proc_thread_func(void* processor);
+
     static void timer_callback(uv_timer_t* handle);
     static void cleanup_async_cb(uv_async_t *handle);
     static void proc_async_cb(uv_async_t *handle);

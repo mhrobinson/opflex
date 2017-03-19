@@ -28,27 +28,22 @@ namespace engine {
 namespace internal {
 
 using std::string;
-#ifndef SIMPLE_RPC
+
 using yajr::Peer;
 using yajr::transport::ZeroCopyOpenSSL;
-#endif
 using ofcore::PeerStatusListener;
 
-OpflexClientConnection::OpflexClientConnection(HandlerFactory& handlerFactory, 
+OpflexClientConnection::OpflexClientConnection(HandlerFactory& handlerFactory,
                                                OpflexPool* pool_,
-                                               const string& hostname_, 
+                                               const string& hostname_,
                                                int port_)
     : OpflexConnection(handlerFactory),
-      pool(pool_), hostname(hostname_), port(port_),
-#ifdef SIMPLE_RPC
-      retry(true),
-#endif
-      started(false), active(false), closing(false), failureCount(0) {
-
+      pool(pool_), hostname(hostname_), port(port_), peer(NULL),
+      started(false), active(false), closing(false), ready(false),
+      failureCount(0), handshake_timer(NULL) {
 }
 
 OpflexClientConnection::~OpflexClientConnection() {
-
 }
 
 const std::string& OpflexClientConnection::getName() {
@@ -60,6 +55,8 @@ const std::string& OpflexClientConnection::getDomain() {
 }
 
 void OpflexClientConnection::notifyReady() {
+    ready = true;
+    uv_timer_stop(handshake_timer);
     pool->updatePeerStatus(hostname, port, PeerStatusListener::READY);
 }
 
@@ -67,6 +64,11 @@ void OpflexClientConnection::connect() {
     if (started) return;
     started = true;
     active = true;
+    ready = false;
+
+    handshake_timer = new uv_timer_t;
+    uv_timer_init(pool->client_loop, handshake_timer);
+    handshake_timer->data = this;
 
     pool->updatePeerStatus(hostname, port, PeerStatusListener::CONNECTING);
 
@@ -74,103 +76,73 @@ void OpflexClientConnection::connect() {
     rp << hostname << ":" << port;
     remote_peer = rp.str();
 
-#ifdef SIMPLE_RPC
-    uv_tcp_init(&pool->client_loop, &socket);
-    socket.data = this;
-    // assume that hostname is an ipv4 address for simple rpc
-    struct sockaddr_in dest;
-    int rc = uv_ip4_addr(hostname.c_str(), port, &dest);
-    if (rc < 0) {
-        throw std::runtime_error(string("Could not convert to IP address ") +
-                                 hostname);
-    }
-    uv_tcp_connect(&connect_req, &socket, (struct sockaddr*)&dest, connect_cb);
-#else
-    peer = yajr::Peer::create(hostname, 
+    peer = yajr::Peer::create(hostname,
                               boost::lexical_cast<string>(port),
-                              on_state_change, 
+                              on_state_change,
                               this, loop_selector);
-#endif
 }
 
 void OpflexClientConnection::disconnect() {
     if (!active) return;
 
-    LOG(DEBUG) << "[" << getRemotePeer() << "] " 
+    LOG(DEBUG) << "[" << getRemotePeer() << "] "
                << "Disconnecting";
-#ifdef SIMPLE_RPC
-    active = false;
-    handler->disconnected();
-    OpflexConnection::disconnect();
-    uv_read_stop((uv_stream_t*)&socket);
-    uv_close((uv_handle_t*)&socket, on_conn_closed);
-#else
+    if (handshake_timer)
+        uv_timer_stop(handshake_timer);
     peer->disconnect();
-#endif
 }
 
 void OpflexClientConnection::close() {
     if (closing) return;
 
-    LOG(DEBUG) << "[" << getRemotePeer() << "] " 
+    LOG(DEBUG) << "[" << getRemotePeer() << "] "
                << "Closing";
 
     closing = true;
     pool->updatePeerStatus(hostname, port, PeerStatusListener::CLOSING);
-#ifdef SIMPLE_RPC
-    retry = false;
-    if (active) {
-        disconnect();
-    } else if (!closing) {
-        pool->connectionClosed(this);
-    }
-#else
     active = false;
+    if (handshake_timer) {
+        uv_timer_stop(handshake_timer);
+        handshake_timer->data = NULL;
+        uv_close((uv_handle_t*)handshake_timer, on_timer_close);
+    }
     handler->disconnected();
     OpflexConnection::disconnect();
-    peer->destroy();
-#endif
+    if (peer)
+        peer->destroy();
 }
-
-#ifdef SIMPLE_RPC
-void OpflexClientConnection::connect_cb(uv_connect_t* req, int status) {
-    OpflexClientConnection* conn = 
-        (OpflexClientConnection*)req->handle->data;
-    
-    if (status < 0) {
-        LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
-                   << "Could not connect: " << uv_strerror(status);
-        conn->disconnect();
-    } else {
-        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
-                  << "New client connection";
-        uv_read_start((uv_stream_t*)&conn->socket, alloc_cb, read_cb);
-        conn->handler->connected();
-        conn->failureCount = 0;
-    }
-}
-
-void OpflexClientConnection::on_conn_closed(uv_handle_t *handle) {
-    OpflexClientConnection* conn = (OpflexClientConnection*)handle->data;
-    OpflexPool::on_conn_closed(conn);
-}
-
-#else
 
 uv_loop_t* OpflexClientConnection::loop_selector(void * data) {
     OpflexClientConnection* conn = (OpflexClientConnection*)data;
     return conn->getPool()->getLoop();
 }
 
-void OpflexClientConnection::on_state_change(Peer * p, void * data, 
+void OpflexClientConnection::on_handshake_timer(uv_timer_t* handle) {
+    OpflexClientConnection* conn = (OpflexClientConnection*)handle->data;
+    if (conn == NULL) return;
+    LOG(ERROR) << "[" << conn->getRemotePeer() << "] "
+               << "Handshake timed out";
+    conn->disconnect();
+}
+
+void OpflexClientConnection::on_timer_close(uv_handle_t* handle) {
+    delete handle;
+}
+
+void OpflexClientConnection::on_state_change(Peer * p, void * data,
                                              yajr::StateChange::To stateChange,
                                              int error) {
     OpflexClientConnection* conn = (OpflexClientConnection*)data;
     switch (stateChange) {
     case yajr::StateChange::CONNECT:
-        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
+        LOG(INFO) << "[" << conn->getRemotePeer() << "] "
                   << "New client connection";
         conn->active = true;
+        conn->ready = false;
+        uv_timer_stop(conn->handshake_timer);
+        uv_timer_start(conn->handshake_timer,
+                       on_handshake_timer, 5000, 0);
+
         if (conn->pool->clientCtx.get())
             ZeroCopyOpenSSL::attachTransport(p, conn->pool->clientCtx.get());
         p->startKeepAlive(500, 2500, 5000);
@@ -181,9 +153,12 @@ void OpflexClientConnection::on_state_change(Peer * p, void * data,
         conn->failureCount = 0;
         break;
     case yajr::StateChange::DISCONNECT:
-        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
+        LOG(INFO) << "[" << conn->getRemotePeer() << "] "
                   << "Disconnected";
+
+        uv_timer_stop(conn->handshake_timer);
         conn->active = false;
+        conn->ready = false;
         conn->handler->disconnected();
         conn->cleanup();
 
@@ -201,12 +176,12 @@ void OpflexClientConnection::on_state_change(Peer * p, void * data,
         }
         break;
     case yajr::StateChange::FAILURE:
-        LOG(ERROR) << "[" << conn->getRemotePeer() << "] " 
+        LOG(ERROR) << "[" << conn->getRemotePeer() << "] "
                    << "Connection error: " << uv_strerror(error);
         conn->connectionFailure();
         break;
     case yajr::StateChange::DELETE:
-        LOG(INFO) << "[" << conn->getRemotePeer() << "] " 
+        LOG(INFO) << "[" << conn->getRemotePeer() << "] "
                   << "Connection closed";
         conn->getPool()->connectionClosed(conn);
         break;
@@ -214,6 +189,8 @@ void OpflexClientConnection::on_state_change(Peer * p, void * data,
 }
 
 void OpflexClientConnection::connectionFailure() {
+    uv_timer_stop(handshake_timer);
+    ready = false;
     if (!closing)
         disconnect();
     if (!closing && failureCount >= 3 &&
@@ -227,13 +204,6 @@ void OpflexClientConnection::connectionFailure() {
         failureCount += 1;
     }
 }
-#endif
-
-#ifdef SIMPLE_RPC
-void OpflexClientConnection::write(const rapidjson::StringBuffer* buf) {
-    OpflexConnection::write((uv_stream_t*)&socket, buf);
-}
-#endif
 
 void OpflexClientConnection::messagesReady() {
     pool->messagesReady();

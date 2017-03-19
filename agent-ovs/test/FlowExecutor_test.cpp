@@ -13,10 +13,13 @@
 #include <boost/assign/list_inserter.hpp>
 
 #include "logging.h"
-#include "ovs.h"
+
 #include "SwitchConnection.h"
 #include "FlowExecutor.h"
-#include "ActionBuilder.h"
+#include "FlowBuilder.h"
+
+#include "ovs-shim.h"
+#include "ovs-ofputil.h"
 
 using namespace std;
 using namespace boost;
@@ -30,7 +33,7 @@ public:
     ~MockExecutorConnection() {
     }
 
-    ofp_version GetProtocolVersion() { return OFP13_VERSION; }
+    int GetProtocolVersion() { return OFP13_VERSION; }
     int SendMessage(ofpbuf *msg);
 
     void Expect(const FlowEdit& fe) {
@@ -70,16 +73,16 @@ BOOST_AUTO_TEST_SUITE(FlowExecutor_test)
 
 BOOST_FIXTURE_TEST_CASE(multiedit, FlowExecutorFixture) {
     FlowEdit fe;
-    assign::push_back(fe.edits)(FlowEdit::add, flows[0])
-            (FlowEdit::mod, flows[1])(FlowEdit::del, flows[0]);
+    assign::push_back(fe.edits)(FlowEdit::ADD, flows[0])
+            (FlowEdit::MOD, flows[1])(FlowEdit::DEL, flows[0]);
     conn.Expect(fe);
     BOOST_CHECK(fexec.Execute(fe));
 }
 
 BOOST_FIXTURE_TEST_CASE(noblock, FlowExecutorFixture) {
     FlowEdit fe;
-    assign::push_back(fe.edits)(FlowEdit::add, flows[0])
-            (FlowEdit::mod, flows[1]);
+    assign::push_back(fe.edits)(FlowEdit::ADD, flows[0])
+            (FlowEdit::MOD, flows[1]);
     conn.Expect(fe);
     BOOST_CHECK(fexec.ExecuteNoBlock(fe));
     BOOST_CHECK(conn.expectedEdits.edits.empty());
@@ -87,7 +90,7 @@ BOOST_FIXTURE_TEST_CASE(noblock, FlowExecutorFixture) {
 
 BOOST_FIXTURE_TEST_CASE(moderror, FlowExecutorFixture) {
     FlowEdit fe;
-    assign::push_back(fe.edits)(FlowEdit::mod, flows[0]);
+    assign::push_back(fe.edits)(FlowEdit::MOD, flows[0]);
     conn.Expect(fe);
     conn.ReplyWithError(OFPERR_OFPFMFC_TABLE_FULL);
     BOOST_CHECK(fexec.Execute(fe) == false);
@@ -95,7 +98,7 @@ BOOST_FIXTURE_TEST_CASE(moderror, FlowExecutorFixture) {
 
 BOOST_FIXTURE_TEST_CASE(reconnect, FlowExecutorFixture) {
     FlowEdit fe;
-    assign::push_back(fe.edits)(FlowEdit::mod, flows[0]);
+    assign::push_back(fe.edits)(FlowEdit::MOD, flows[0]);
     conn.Expect(fe);
     conn.reconnectReply = true;
     BOOST_CHECK(fexec.Execute(fe) == false);
@@ -105,7 +108,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 int MockExecutorConnection::SendMessage(ofpbuf *msg) {
     uint16_t COMM[] = {OFPFC_ADD, OFPFC_MODIFY_STRICT, OFPFC_DELETE_STRICT};
-    ofp_header *msgHdr = (ofp_header *)ofpbuf_data(msg);
+    ofp_header *msgHdr = (ofp_header *)msg->data;
     ofptype type;
     ofptype_decode(&type, msgHdr);
     BOOST_CHECK(type == OFPTYPE_FLOW_MOD ||
@@ -114,10 +117,11 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
         ofputil_flow_mod fm;
         ofpbuf ofpacts;
         ofpbuf_init(&ofpacts, 64);
-        int err = ofputil_decode_flow_mod(&fm, msgHdr,
-                ofputil_protocol_from_ofp_version(GetProtocolVersion()),
+        int err = ofputil_decode_flow_mod
+            (&fm, msgHdr, ofputil_protocol_from_ofp_version
+             ((ofp_version)GetProtocolVersion()),
                 &ofpacts, OFPP_MAX, 255);
-        fm.ofpacts = ActionBuilder::GetActionsFromBuffer(&ofpacts,
+        fm.ofpacts = ActionBuilder::getActionsFromBuffer(&ofpacts,
                 fm.ofpacts_len);
         ofpbuf_uninit(&ofpacts);
         BOOST_CHECK_EQUAL(err, 0);
@@ -133,13 +137,13 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
         BOOST_CHECK(ee.cookie ==
                 (fm.command == OFPFC_ADD ? fm.new_cookie : fm.cookie));
         BOOST_CHECK(fm.cookie_mask ==
-                (fm.command == OFPFC_ADD ? htonll(0) : ~htonll(0)));
+                    (fm.command == OFPFC_ADD ? 0 : ~((uint64_t)0)));
         BOOST_CHECK(match_equal(&ee.match, &fm.match));
         if (fm.command == OFPFC_DELETE_STRICT) {
             BOOST_CHECK_EQUAL(fm.ofpacts_len, 0);
         } else {
-            BOOST_CHECK(ofpacts_equal(ee.ofpacts, ee.ofpacts_len,
-                                      fm.ofpacts, fm.ofpacts_len));
+            BOOST_CHECK(action_equal(ee.ofpacts, ee.ofpacts_len,
+                                     fm.ofpacts, fm.ofpacts_len));
         }
         free((void *)fm.ofpacts);
     } else if (type == OFPTYPE_BARRIER_REQUEST) {
@@ -150,11 +154,11 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
              executor->Connected(this);
              return 0;
          }
-         ofpbuf *barrRep = ofpraw_alloc_reply(OFPRAW_OFPT11_BARRIER_REPLY,
-                 msgHdr, 0);
+         struct ofpbuf *barrRep =
+             ofpraw_alloc_reply(OFPRAW_OFPT11_BARRIER_REPLY, msgHdr, 0);
          if (errReply != 0) {
              msgHdr->xid = lastXid;
-             ofpbuf *reply = ofperr_encode_reply(errReply, msgHdr);
+             struct ofpbuf *reply = ofperr_encode_reply(errReply, msgHdr);
              executor->Handle(this, OFPTYPE_ERROR, reply);
              ofpbuf_delete(reply);
          }
@@ -167,26 +171,23 @@ int MockExecutorConnection::SendMessage(ofpbuf *msg) {
 }
 
 void FlowExecutorFixture::createTestFlows() {
-    flows.push_back(FlowEntryPtr(new FlowEntry()));
-    FlowEntry& e0 = *(flows.back());
-    e0.entry->table_id = 0;
-    e0.entry->priority = 100;
-    e0.entry->cookie = 0xabcd;
-    match_set_reg(&e0.entry->match, 3, 42);
-    match_set_dl_type(&e0.entry->match, htons(ETH_TYPE_IP));
-    match_set_nw_dst(&e0.entry->match, 0x01020304);
-    ActionBuilder ab0;
-    ab0.SetRegLoad(MFF_REG0, 100);
-    ab0.SetOutputToPort(OFPP_IN_PORT);
-    ab0.Build(e0.entry);
+    FlowBuilder e0;
+    e0.priority(100)
+        .cookie(0xabcd)
+        .reg(3, 42)
+        .ipDst(boost::asio::ip::address::from_string("1.2.3.4"))
+        .action()
+        .reg(MFF_REG0, 100)
+        .output(OFPP_IN_PORT);
+    flows.push_back(e0.build());
 
-    flows.push_back(FlowEntryPtr(new FlowEntry()));
-    FlowEntry& e1 = *(flows.back());
-    e1.entry->table_id = 5;
-    e1.entry->priority = 50;
-    match_set_in_port(&e1.entry->match, 2168);
-    ActionBuilder ab1;
-    ab1.SetGotoTable(10);
-    ab1.Build(e1.entry);
+    FlowBuilder e1;
+    e1.priority(50)
+        .inPort(2168)
+        .action().go(10);
+    flows.push_back(e1.build());
+
+    flows[0]->entry->table_id = 0;
+    flows[1]->entry->table_id = 5;
 }
 

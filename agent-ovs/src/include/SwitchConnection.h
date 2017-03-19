@@ -1,20 +1,25 @@
+/* -*- C++ -*-; c-basic-offset: 4; indent-tabs-mode: nil */
 /*
- * Copyright (c) 2014 Cisco Systems, Inc. and others.  All rights reserved.
+ * Copyright (c) 2014-2016 Cisco Systems, Inc. and others.  All rights reserved.
  *
  * This program and the accompanying materials are made available under the
  * terms of the Eclipse Public License v1.0 which accompanies this distribution,
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-
 #ifndef OVSAGENT_SWITCHCONNECTION_H_
 #define OVSAGENT_SWITCHCONNECTION_H_
 
 #include <queue>
-#include <boost/unordered_map.hpp>
-#include <boost/thread.hpp>
-#include <boost/thread/mutex.hpp>
-#include "ovs.h"
+#include <list>
+#include <unordered_map>
+#include <thread>
+#include <mutex>
+
+struct vconn;
+struct jsonrpc;
+struct jsonrpc_msg;
+struct ofpbuf;
 
 namespace ovsagent {
 
@@ -31,8 +36,8 @@ public:
      * @param msgType Type of the received message
      * @param msg The received message
      */
-    virtual void Handle(SwitchConnection *swConn, ofptype msgType,
-            ofpbuf *msg) = 0;
+    virtual void Handle(SwitchConnection *swConn, int msgType,
+                        struct ofpbuf *msg) = 0;
 };
 
 /**
@@ -83,12 +88,12 @@ public:
      * @param protoVer Version of OpenFlow protocol to use
      * @return 0 on success, openvswitch error code on failure
      */
-    int Connect(ofp_version protoVer);
+    virtual int Connect(int protoVer);
 
     /**
      * Disconnect from daemon and switch.
      */
-    void Disconnect();
+    virtual void Disconnect();
 
     /**
      * Returns true if connected to the daemon and the switch.
@@ -112,14 +117,14 @@ public:
      * @param msgType OpenFlow message type to register for
      * @param handler Handler to register
      */
-    void RegisterMessageHandler(ofptype msgType, MessageHandler *handler);
+    void RegisterMessageHandler(int msgType, MessageHandler *handler);
 
     /**
      * Unregister a previously registered handler for OpenFlow message.
      * @param msgType OpenFlow message type to unregister for
      * @param handler Handler to unregister
      */
-    void UnregisterMessageHandler(ofptype msgType, MessageHandler *handler);
+    void UnregisterMessageHandler(int msgType, MessageHandler *handler);
 
     /**
      * Register handler for JSON messages.
@@ -137,7 +142,7 @@ public:
      * Send an OpenFlow message to the switch.
      * @return 0 on success, openvswitch error code on failure
      */
-    virtual int SendMessage(ofpbuf *msg);
+    virtual int SendMessage(struct ofpbuf *msg);
 
     /**
      * Send a JSON message to the daemon.
@@ -148,7 +153,7 @@ public:
     /**
      * Returns the OpenFlow protocol version being used by the connection.
      */
-    virtual ofp_version GetProtocolVersion();
+    virtual int GetProtocolVersion();
 
     /**
      * Get the name of switch that this connection is for.
@@ -158,7 +163,6 @@ public:
     /** Interface: Boost thread */
     void operator()();
 
-private:
     /**
      * Does actual work of establishing an OpenFlow connection to the switch.
      * @return 0 on success, openvswitch error code on failure
@@ -224,19 +228,25 @@ private:
      */
     bool IsConnectedLocked();
 
+protected:
+    /**
+     * Notify connect listeners of a connect event
+     */
+    void notifyConnectListeners();
+
 private:
     std::string switchName;
     vconn *ofConn;
-    ofp_version ofProtoVersion;
+    int ofProtoVersion;
     jsonrpc *jsonConn;
 
     bool isDisconnecting;
 
-    boost::thread *connThread;
-    boost::mutex connMtx;
+    std::unique_ptr<std::thread> connThread;
+    std::mutex connMtx;
 
     typedef std::list<MessageHandler *>     HandlerList;
-    typedef boost::unordered_map<ofptype, HandlerList> HandlerMap;
+    typedef std::unordered_map<int, HandlerList> HandlerMap;
     HandlerMap msgHandlers;
 
     typedef std::list<JsonMessageHandler *>  JsonHandlerList;
@@ -253,7 +263,7 @@ private:
      * Needed to keep the connection to switch alive.
      */
     class EchoRequestHandler : public MessageHandler {
-        void Handle(SwitchConnection *swConn, ofptype type, ofpbuf *msg);
+        void Handle(SwitchConnection *swConn, int type, struct ofpbuf *msg);
     };
 
     EchoRequestHandler echoReqHandler;
@@ -262,7 +272,7 @@ private:
      * @brief Handle errors from the switch by logging.
      */
     class ErrorHandler : public MessageHandler {
-        void Handle(SwitchConnection *swConn, ofptype type, ofpbuf *msg);
+        void Handle(SwitchConnection *swConn, int type, struct ofpbuf *msg);
     };
 
     ErrorHandler errorHandler;

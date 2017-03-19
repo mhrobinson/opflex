@@ -12,6 +12,10 @@ owner[init]
     class[relator/Universe]
     class[policy/Universe]
     class[epr/Universe]
+    class[dci/Discoverer]
+    class[dci/Ep]
+    class[dci/EpToUnivRSrc]
+    class[dci/Universe]
     class[observer/Universe]
     module[dmtree]
     {
@@ -38,7 +42,11 @@ owner[policyreg]
         class[*]
     }
     module[platform]
-    {   
+    {
+        class[*]
+    }
+    module[dci]
+    {
         class[*]
     }
 }
@@ -48,9 +56,12 @@ owner[policyelement]
     class[observer/Observable]
     class[gbpe/TunnelEp]
     class[gbpe/VMEp]
+    class[gbpe/Attestation]
     class[gbpe/EpgMappingCtx]
     class[gbpe/EpgMappingCtxToAttrSetRSrc]
     class[gbpe/EpgMappingCtxToEpgMappingRSrc]
+    class[gbpe/ReportedEpAttributeSet]
+    class[gbpe/ReportedEpAttribute]
     module[epr]
     {
         class[*]

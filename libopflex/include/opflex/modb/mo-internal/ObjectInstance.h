@@ -18,12 +18,12 @@
 #include <utility>
 #include <boost/tuple/tuple_comparison.hpp>
 #include <boost/cstdint.hpp>
-#include <boost/unordered_map.hpp>
 #include <boost/variant.hpp>
 
 #include "opflex/modb/PropertyInfo.h"
 #include "opflex/modb/URI.h"
 #include "opflex/modb/MAC.h"
+#include "opflex/ofcore/OFTypes.h"
 
 namespace opflex {
 namespace modb {
@@ -45,6 +45,51 @@ typedef std::pair<class_id_t, URI> reference_t;
  * as a key in an unordered_map
  */
 size_t hash_value(prop_key_t const& key);
+
+/**
+ * Compute a hash value for the reference_t, making it suitable as a
+ * key in a boost::unordered_map
+ */
+size_t hash_value(reference_t const& key);
+
+} /* namespace modb */
+} /* namespace opflex */
+
+#if __cplusplus > 199711L
+
+namespace std {
+/**
+ * Template specialization for std::hash<opflex::modb::prop_key_t>, making
+ * prop_key_t suitable as a key in a std::unordered_map
+ */
+template<> struct hash<opflex::modb::prop_key_t> {
+    /**
+     * Hash the opflex::modb::prop_key_t
+     */
+    std::size_t operator()(const opflex::modb::prop_key_t& u) const {
+        return opflex::modb::hash_value(u);
+    }
+};
+
+/**
+ * Template specialization for std::hash<opflex::modb::reference_t>, making
+ * it suitable as a key in a std::unordered_map
+ */
+template<> struct hash<opflex::modb::reference_t> {
+    /**
+     * Hash the opflex::modb::reference_t
+     */
+    std::size_t operator()(const opflex::modb::reference_t& p) const {
+        return opflex::modb::hash_value(p);
+    }
+};
+
+} /* namespace std */
+
+#endif
+
+namespace opflex {
+namespace modb {
 
 namespace mointernal {
 
@@ -75,12 +120,12 @@ public:
      * Check whether the given property is set.  If the property is
      * vector-valued, this will return false if the vector is zero
      * length.
-     * 
+     *
      * @param prop_id the property ID to check
      * @param cardinality the cardinality of the property to check
      * @param type the type of the property
      */
-    bool isSet(prop_id_t prop_id, 
+    bool isSet(prop_id_t prop_id,
                PropertyInfo::property_type_t type,
                PropertyInfo::cardinality_t cardinality = PropertyInfo::SCALAR) const;
 
@@ -93,7 +138,7 @@ public:
      * @param cardinality the cardinality of the property to unset
      * @return true if the property was alread set before
      */
-    bool unset(prop_id_t prop_id, 
+    bool unset(prop_id_t prop_id,
                PropertyInfo::property_type_t type,
                PropertyInfo::cardinality_t cardinality);
 
@@ -307,7 +352,7 @@ public:
      * @return a reference to this object that can be used to chain
      * the calls
      */
-    void setReference(prop_id_t prop_id, 
+    void setReference(prop_id_t prop_id,
                       class_id_t class_id, const URI& uri);
 
     /**
@@ -319,7 +364,7 @@ public:
      * @return a reference to this object that can be used to chain
      * the calls
      */
-    void setReference(prop_id_t prop_id, 
+    void setReference(prop_id_t prop_id,
                       const std::vector<reference_t>& value);
 
     /**
@@ -381,7 +426,7 @@ public:
      * @return a reference to this object that can be used to chain
      * the calls
      */
-    void addReference(prop_id_t prop_id, 
+    void addReference(prop_id_t prop_id,
                       class_id_t class_id, const URI& uri);
 
     /**
@@ -403,7 +448,7 @@ private:
         boost::variant<boost::blank,
                        uint64_t,
                        int64_t,
-                       std::string*,
+                       std::string,
                        reference_t,
                        MAC,
                        std::vector<uint64_t>*,
@@ -420,16 +465,16 @@ private:
         void clear();
     };
 
-    typedef boost::unordered_map<prop_key_t, Value> prop_map_t;
+    typedef OF_UNORDERED_MAP<prop_key_t, Value> prop_map_t;
     prop_map_t prop_map;
 
-    friend bool operator==(const ObjectInstance& lhs, 
+    friend bool operator==(const ObjectInstance& lhs,
                            const ObjectInstance& rhs);
-    friend bool operator!=(const ObjectInstance& lhs, 
+    friend bool operator!=(const ObjectInstance& lhs,
                            const ObjectInstance& rhs);
-    friend bool operator==(const Value& lhs, 
+    friend bool operator==(const Value& lhs,
                            const Value& rhs);
-    friend bool operator!=(const Value& lhs, 
+    friend bool operator!=(const Value& lhs,
                            const Value& rhs);
     template <typename T>
     friend bool equal(const Value& lhs, const Value& rhs);

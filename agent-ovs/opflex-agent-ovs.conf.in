@@ -1,6 +1,11 @@
 {
     // Logging configuration
     // "log": {
+    //     // Set the log level.
+    //     // Possible values in descending order of verbosity:
+    //     // "debug7"-"debug0", "debug" (synonym for "debug0"),
+    //     // "info", "warning", "error", "fatal"
+    //     // Default: "info"
     //     "level": "info"
     // },
 
@@ -23,7 +28,7 @@
 
         "ssl": {
             // SSL mode.  Possible values:
-            // disabled: communicate without encryption
+            // disabled: communicate without encryption (default)
             // encrypted: encrypt but do not verify peers
             // secure: encrypt and verify peer certificates
             "mode": "encrypted",
@@ -31,34 +36,92 @@
             // The path to a directory containing trusted certificate
             // authority public certificates, or a file containing a
             // specific CA certificate.
-            "ca-store": "/etc/ssl/certs/"
+            // Default: "DEFAULT_CA_CERT_DIR"
+            "ca-store": "DEFAULT_CA_CERT_DIR"
+
+            // Use a client certificate to authenticate to the server
+            // "path": specifies the path to the PEM file for this
+            // peer, containing its certificate and its private key,
+            // possibly encrypted.
+            // "password": specifies the password needed to decrypt the
+            // private key for the certificate
+            // Default: Do not use a client certificate
+            //
+            // EXAMPLE:
+            //, "client-cert" : {
+            //    "path": "DEFAULT_CLIENT_CERT_PATH",
+            //    "password": "password"
+            //}
         },
 
         "inspector": {
             // Enable the MODB inspector service, which allows
             // inspecting the state of the managed object database.
-	    // Default: enabled
+            // Default: true
             "enabled": true,
 
             // Listen on the specified socket for the inspector
-	    // Default DEFAULT_INSPECTOR_SOCKET
+            // Default: "DEFAULT_INSPECTOR_SOCKET"
             "socket-name": "DEFAULT_INSPECTOR_SOCKET"
+        },
+
+        "notif": {
+            // Enable the agent notification service, which sends
+            // notifications to interested listeners over a UNIX
+            // socket.
+            // Default: true
+            "enabled": true,
+
+            // Listen on the specified socket for the inspector
+            // Default: "DEFAULT_NOTIF_SOCKET"
+            "socket-name": "DEFAULT_NOTIF_SOCKET",
+
+            // Set the socket owner user after binding if the user
+            // exists
+            // Default: do not set the owner
+            // "socket-owner": "root",
+
+            // Set the socket group after binding if the group name
+            // exists
+            // Default: do not set the group
+            "socket-group": "opflexep",
+
+            // Set the socket permissions after binding to the
+            // specified octal permissions mask
+            // Default: do not set the permissions
+            "socket-permissions": "770"
         }
     },
 
     // Endpoint sources provide metadata about local endpoints
     "endpoint-sources": {
         // Filesystem path to monitor for endpoint information
+        // Default: no endpoint sources
         "filesystem": ["DEFAULT_FS_ENDPOINT_DIR"]
     },
 
+    // Service sources provide metadata about services that can
+    // provide functionality for local endpoints
+    "service-sources": {
+        // Filesystem path to monitor for service information
+        // Default: no service sources
+        "filesystem": ["DEFAULT_FS_SERVICE_DIR"]
+    },
+
     // Renderers enforce policy obtained via OpFlex.
+    // Default: no renderers
     "renderers": {
         // Stitched-mode renderer for interoperating with a
         // hardware fabric such as ACI
         // EXAMPLE:
         // "stitched-mode": {
-        //     "ovs-bridge-name": "br0",
+        //     // "Integration" bridge used to enforce contracts and forward
+        //     // packets
+        //     "int-bridge-name": "br-int",
+        //
+        //     // "Access" bridge used to enforce access control and enforce
+        //     // security groups.
+        //     "access-bridge-name": "br-access",
         //
         //     // Set encapsulation type.  Must set either vxlan or vlan.
         //     "encap": {
@@ -99,11 +162,12 @@
         //         // Configure the virtual distributed router
         //         "virtual-router": {
         //             // Enable virtual distributed router.  Set to true
-        //             // to enable or false to disable.  Default true.
+        //             // to enable or false to disable.
+        //             // Default: true.
         //             "enabled": true,
         //
         //             // Override MAC address for virtual router.
-        //             // Default is "00:22:bd:f8:19:ff"
+        //             // Default: "00:22:bd:f8:19:ff"
         //             "mac": "00:22:bd:f8:19:ff",
         //
         //             // Configure IPv6-related settings for the virtual
@@ -121,24 +185,52 @@
         //         // Configure virtual distributed DHCP server
         //         "virtual-dhcp": {
         //             // Enable virtual distributed DHCP server.  Set to
-        //             // true to enable or false to disable.  Default
-        //             // true.
+        //             // true to enable or false to disable.
+        //             // Default: true
         //             "enabled": true,
         //
         //             // Override MAC address for virtual dhcp server.
-        //             // Default is "00:22:bd:f8:19:ff"
+        //             // Default: "00:22:bd:f8:19:ff"
         //             "mac": "00:22:bd:f8:19:ff"
         //         },
         //
         //         "endpoint-advertisements": {
-        //             // Enable generation of periodic ARP/NDP
-        //             // advertisements for endpoints.  Default true.
-        //             "enabled": "true"
+        //             // Set mode for generation of periodic ARP/NDP
+        //             // advertisements for endpoints.  Possible values:
+        //             // disabled: Do not send advertisements
+        //             // gratuitous-unicast: Send gratuitous endpoint
+        //             //   advertisements as unicast packets to the router
+        //             //   mac.
+        //             // gratuitous-broadcast: Send gratuitous endpoint
+        //             //   advertisements as broadcast packets.
+        //             // router-request: Unicast a spoofed request/solicitation
+        //             //   for the subnet's gateway router.
+        //             // Default: gratuitous-broadcast.
+        //             "mode": "gratuitous-broadcast"
+        //         },
+        //
+        //         "connection-tracking": {
+        //             // Enable support for connection tracking
+        //             // Default: true
+        //             "enabled": true,
+        //
+        //             // Specify the range of zone IDs to use for connection
+        //             // tracking.  Minimum is 1 and maximum is 65534.
+        //             // Default: 1-65534
+        //             "zone-range" {
+        //                 "start": 1,
+        //                 "end": 65534,
+        //             }
         //         }
         //     },
         //
         //     // Location to store cached IDs for managing flow state
-        //     "flowid-cache-dir": "DEFAULT_FLOWID_CACHE_DIR"
+        //     // Default: "DEFAULT_FLOWID_CACHE_DIR"
+        //     "flowid-cache-dir": "DEFAULT_FLOWID_CACHE_DIR",
+        //
+        //     // Location to write multicast groups for the mcast-daemon
+        //     // Default: "DEFAULT_MCAST_GROUP_FILE"
+        //     "mcast-group-file": "DEFAULT_MCAST_GROUP_FILE"
         // }
     }
 }

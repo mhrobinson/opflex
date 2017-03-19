@@ -1,3 +1,4 @@
+/* -*- C++ -*-; c-basic-offset: 4; indent-tabs-mode: nil */
 /*
  * Definition of IdGenerator class
  * Copyright (c) 2014 Cisco Systems, Inc. and others.  All rights reserved.
@@ -10,44 +11,106 @@
 #ifndef OVSAGENT_IDGENERATOR_H_
 #define OVSAGENT_IDGENERATOR_H_
 
-#include <string>
-#include <boost/unordered_map.hpp>
+#include <opflex/ofcore/OFFramework.h>
 
-#include "opflex/modb/URI.h"
+#include <boost/optional.hpp>
+
+#include <string>
+#include <set>
+#include <unordered_map>
+#include <mutex>
+#include <chrono>
+#include <functional>
 
 namespace ovsagent {
 
 /**
- * Class to generate unique numeric IDs for URIs. Also supports
+ * Class to generate unique numeric IDs for strings. Also supports
  * persisting the assignments so that they can restored upon restart.
  */
-class IdGenerator {
+class IdGenerator : private boost::noncopyable {
 public:
+    /**
+     * Initialize a new id generator using the default cleanup
+     * interval
+     **/
+    IdGenerator();
+
+    /**
+     * Initialize a new id generator using the specified cleanup
+     * interval
+     *
+     * @param cleanupInterval the amount of time to keep ids before
+     * purging them on cleanup
+     **/
+    IdGenerator(std::chrono::milliseconds cleanupInterval);
+
     /**
      * Initialize an ID namespace for generating IDs. If an ID file for
      * for the namespace is found, loads the assignments from the file.
      *
      * @param nmspc ID namespace to initialize
+     * @param minId the minimum ID allowed for the namespace
+     * @param maxId the maximum ID allowed for the namespace
      */
-    void initNamespace(const std::string& nmspc);
+    void initNamespace(const std::string& nmspc,
+                       uint32_t minId = 1,
+                       uint32_t maxId = (1 << 31));
 
     /**
-     * Get a unique ID for the given URI in the given namespace.
+     * Get a unique ID for the given string in the given namespace.
      *
      * @param nmspc Namespace to get an ID from
-     * @param uri URI to get an ID for
+     * @param str string to get an ID for
      * @return 0 if arguments are invalid, -1 if no more IDs can be
-     * generated (for example due to overflow), else ID for the URI
+     * generated (for example due to overflow), else ID for the string
      */
-    uint32_t getId(const std::string& nmspc, const opflex::modb::URI& uri);
+    uint32_t getId(const std::string& nmspc, const std::string& str);
 
     /**
-     * Remove the ID assignment for a given URI.
+     * Remove the ID assignment for a given string, and move it to the
+     * erased list
      *
      * @param nmspc Namespace to remove from
-     * @param uri URI to remove
+     * @param str string to remove
      */
-    void erase(const std::string& nmspc, const opflex::modb::URI& uri);
+    void erase(const std::string& nmspc, const std::string& str);
+
+    /**
+     * Get the number of IDs remaining for a namespace
+     * @param nmspc the namespace to check
+     * @return the number of remaining IDs
+     */
+    uint32_t getRemainingIds(const std::string& nmspc);
+
+    /**
+     * Get the number of sparse ranges for a namespace.  This is only
+     * useful for testing purposes.
+     * @param nmspc the namespace to chec
+     * @return the number of remaining free ranges
+     */
+    uint32_t getFreeRangeCount(const std::string& nmspc);
+
+    /**
+     * Purge erased entries that are sufficiently old
+     */
+    void cleanup();
+
+    /**
+     * Function that can be registered as a hook for allocation of an
+     * ID.  A false return value indicates allocation should be
+     * canceled.
+     */
+    typedef std::function<bool(const std::string&, uint32_t)> alloc_hook_t;
+
+    /**
+     * Set an allocation callback hook called when a new ID is
+     * allocated
+     *
+     * @param nmspc the namespace to register the hook for
+     * @param allocHook the callback to register
+     */
+    void setAllocHook(const std::string& nmspc, alloc_hook_t& allocHook);
 
     /**
      * Gets the name of the file used for persisting IDs.
@@ -65,19 +128,68 @@ public:
     void setPersistLocation(const std::string& dir) {
         persistDir = dir;
     }
+
+    /**
+     * The garbage collection callback.  Arguments are the namespace
+     * and the string to check.  Returns true if the string remains
+     * valid.
+     */
+    typedef std::function<bool(const std::string&,
+                               const std::string&)> garbage_cb_t;
+
+    /**
+     * Cleanup the string map by verifying that each entry in the map
+     * for the given namespace is still a valid object
+     *
+     * @param ns the namespace to check
+     * @param cb the callback to call to verify the namespace
+     */
+    void collectGarbage(const std::string& ns, garbage_cb_t cb);
+
+    /**
+     * A ready-made callback for IDs formed from a managed object URI
+     * @param framework the framework object
+     * @param ns the namespace from collectGarbage
+     * @param str the string from collectGarbage
+     */
+    template <class MO>
+    static bool uriIdGarbageCb(opflex::ofcore::OFFramework& framework,
+                               const std::string& ns, const std::string& str) {
+        return (bool)MO::resolve(framework, opflex::modb::URI(str));
+    }
+
 private:
+    typedef std::chrono::steady_clock::time_point time_point;
+    typedef std::chrono::milliseconds duration;
+
+    struct id_range {
+        id_range(uint32_t start_, uint32_t end_) :
+            start(start_), end(end_) { }
+
+        uint32_t start;
+        uint32_t end;
+    };
+
+    friend bool operator<(const id_range& lhs, const id_range& rhs);
+    friend bool operator==(const id_range& lhs, const id_range& rhs);
+    friend bool operator!=(const id_range& lhs, const id_range& rhs);
+
     /**
      * Keeps track of IDs assignments in a namespace.
      */
-    struct IdMap {
-        IdMap() : lastUsedId(0) {}
-
+    struct IdMap : private boost::noncopyable {
         /**
-         * Map of URIs to the IDs assigned to them.
+         * Map of strings to the IDs assigned to them.
          */
-        typedef boost::unordered_map<opflex::modb::URI, uint32_t> Uri2IdMap;
-        Uri2IdMap ids;
-        uint32_t lastUsedId;
+        typedef std::unordered_map<std::string, uint32_t> Str2IdMap;
+        Str2IdMap ids;
+
+        std::set<id_range> freeIds;
+
+        typedef std::unordered_map<std::string, time_point> Str2EIdMap;
+        Str2EIdMap erasedIds;
+
+        boost::optional<alloc_hook_t> allocHook;
     };
 
     /**
@@ -87,14 +199,19 @@ private:
      * @param idmap Assignments to save
      */
     void persist(const std::string& nmspc, IdMap& idmap);
+    uint32_t getRemainingIdsLocked(const std::string& nmspc);
+
+    std::mutex id_mutex;
 
     /**
      * Map of ID namespaces to the assignment within that namespace.
      */
-    typedef boost::unordered_map<std::string, IdMap> NamespaceMap;
-    boost::unordered_map<std::string, IdMap> namespaces;
+    typedef std::unordered_map<std::string, IdMap> NamespaceMap;
+    std::unordered_map<std::string, IdMap> namespaces;
     std::string persistDir;
+    duration cleanupInterval;
 };
+
 
 } // ovsagent
 

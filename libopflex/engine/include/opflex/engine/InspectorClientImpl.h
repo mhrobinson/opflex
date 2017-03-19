@@ -78,7 +78,9 @@ public:
     virtual size_t loadFromFile(FILE* file);
     virtual void prettyPrint(std::ostream& output,
                              bool tree = true,
-                             bool includeProps = true);
+                             bool includeProps = true,
+                             bool utf8 = true,
+                             size_t truncate = 0);
 
     // **************
     // HandlerFactory
@@ -96,6 +98,7 @@ public:
 
 private:
     internal::InspectorClientConn conn;
+    util::ThreadManager threadManager;
     modb::ObjectStore db;
     internal::MOSerializer serializer;
     modb::mointernal::StoreClient* storeClient;

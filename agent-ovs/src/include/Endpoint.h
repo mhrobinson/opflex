@@ -9,19 +9,19 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <string>
-#include <utility>
-#include <vector>
-
-#include <boost/unordered_set.hpp>
-#include <boost/unordered_map.hpp>
-#include <boost/optional.hpp>
-#include <opflex/modb/URI.h>
-#include <opflex/modb/MAC.h>
-
 #pragma once
 #ifndef OVSAGENT_ENDPOINT_H
 #define OVSAGENT_ENDPOINT_H
+
+#include <opflex/modb/URI.h>
+#include <opflex/modb/MAC.h>
+
+#include <boost/optional.hpp>
+
+#include <string>
+#include <vector>
+#include <unordered_set>
+#include <unordered_map>
 
 namespace ovsagent {
 
@@ -34,7 +34,7 @@ public:
     /**
      * Default constructor for containers
      */
-    Endpoint() : promiscuousMode(false) {}
+    Endpoint() : promiscuousMode(false), discoveryProxyMode(false) {}
 
     /**
      * Construct a new Endpoint with the given uuid.  Note that
@@ -43,8 +43,8 @@ public:
      *
      * @param uuid_ the unique ID for the endpoint.
      */
-    explicit Endpoint(const std::string& uuid_) 
-        : uuid(uuid_), promiscuousMode(false) {}
+    explicit Endpoint(const std::string& uuid_)
+        : uuid(uuid_), promiscuousMode(false), discoveryProxyMode(false) {}
 
     /**
      * Get the endpoint group URI associated with this endpoint.  Note
@@ -104,11 +104,39 @@ public:
     }
 
     /**
+     * Get the set of security group labels for this endpoint
+     *
+     * @return the list of security group labels
+     */
+    const std::set<opflex::modb::URI>& getSecurityGroups() const {
+        return securityGroups;
+    }
+
+    /**
+     * Set the security group labels for this endpoint.  This will
+     * overwrite any existing labels
+     *
+     * @param securityGroups the set of security labels
+     */
+    void setSecurityGroups(const std::set<opflex::modb::URI>& securityGroups) {
+        this->securityGroups = securityGroups;
+    }
+
+    /**
+     * Add a security group label for this endpoint
+     *
+     * @param securityGroup the URI for the security group to add
+     */
+    void addSecurityGroup(const opflex::modb::URI& securityGroup) {
+        this->securityGroups.insert(securityGroup);
+    }
+
+    /**
      * Get the list of IP addresses associated with this endpoint
      *
      * @return the list of IP addresses
      */
-    const boost::unordered_set<std::string>& getIPs() const {
+    const std::unordered_set<std::string>& getIPs() const {
         return ips;
     }
 
@@ -118,7 +146,7 @@ public:
      *
      * @param ips the IP addresses
      */
-    void setIPs(const boost::unordered_set<std::string>& ips) {
+    void setIPs(const std::unordered_set<std::string>& ips) {
         this->ips = ips;
     }
 
@@ -129,6 +157,86 @@ public:
      */
     void addIP(const std::string& ip) {
         this->ips.insert(ip);
+    }
+
+    /**
+     * Get the list of IP addresses that are valid sources for anycast
+     * service addresses.
+     *
+     * @return the list of IP addresses
+     */
+    const std::unordered_set<std::string>& getAnycastReturnIPs() const {
+        return anycastReturnIps;
+    }
+
+    /**
+     * Set the list of IP addresses that are valid sources for anycast
+     * service addresses.  This will overwrite any existing IP
+     * addresses
+     *
+     * @param ips the IP addresses
+     */
+    void setAnycastReturnIPs(const std::unordered_set<std::string>& ips) {
+        this->anycastReturnIps = ips;
+    }
+
+    /**
+     * Add an IP address to the list of IPs that are valid sources for
+     * anycast service addresses.
+     *
+     * @param ip the IP address to add
+     */
+    void addAnycastReturnIP(const std::string& ip) {
+        this->anycastReturnIps.insert(ip);
+    }
+
+    /**
+     * A MAC/IP address pair representing a virtual IP that can be
+     * claimed by the endpoint by sending a gratuitous ARP.
+     */
+    typedef std::pair<opflex::modb::MAC, std::string> virt_ip_t;
+
+    /**
+     * Functor for storing an virt_ip_t as hash key
+     */
+    struct VirtIpTHash {
+        /**
+         * Hash the virt_ip_t
+         */
+        size_t operator()(const virt_ip_t& m) const noexcept;
+    };
+
+    /**
+     * A set of virt_ip_t
+     */
+    typedef std::unordered_set<virt_ip_t, VirtIpTHash> virt_ip_set;
+
+    /**
+     * Get the list of virtual IP addresses associated with this endpoint
+     *
+     * @return the list of virtual IP addresses
+     */
+    const virt_ip_set& getVirtualIPs() const {
+        return virtualIps;
+    }
+
+    /**
+     * Set the virtual IP addresses for this endpoint.  This will overwrite
+     * any existing virtual IP addresses
+     *
+     * @param virtualIps the virtual IP addresses
+     */
+    void setVirtualIPs(const virt_ip_set& virtualIps) {
+        this->virtualIps = virtualIps;
+    }
+
+    /**
+     * Add a virtual IP address to the list of IPs
+     *
+     * @param virtualIp the IP address to add
+     */
+    void addVirtualIP(const virt_ip_t& virtualIp) {
+        this->virtualIps.insert(virtualIp);
     }
 
     /**
@@ -175,8 +283,8 @@ public:
 
     /**
      * The name of the local interface to which this endpoint is
-     * attached.  If the endpoint is remote or unattached, this will
-     * be boost::none.
+     * attached on the integration bridge.  If the endpoint is remote
+     * or unattached, this will be boost::none.
      *
      * @return the interface name or boost::none if no interface name
      * is set.
@@ -186,20 +294,102 @@ public:
     }
 
     /**
-     * Set the local interface name to the string specified.
+     * Set the integration bridge interface name to the string
+     * specified.
      *
      * @param interfaceName the interface name to which the endpoint
      * is attached locally
-     */ 
+     */
     void setInterfaceName(const std::string& interfaceName) {
         this->interfaceName = interfaceName;
     }
 
     /**
-     * Unset the local interface name
+     * Unset the integration bridge interface name
      */
     void unsetInterfaceName() {
         interfaceName = boost::none;
+    }
+
+    /**
+     * The name of the local interface to which this endpoint is
+     * attached on the access bridge.
+     *
+     * @return the interface name or boost::none if no interface name
+     * is set.
+     */
+    const boost::optional<std::string>& getAccessInterface() const {
+        return accessInterface;
+    }
+
+    /**
+     * Set the access interface name to the string specified.
+     *
+     * @param accessInterface the interface name to which the endpoint
+     * is attached locally
+     */
+    void setAccessInterface(const std::string& accessInterface) {
+        this->accessInterface = accessInterface;
+    }
+
+    /**
+     * Unset the access interface name
+     */
+    void unsetAccessInterface() {
+        accessInterface = boost::none;
+    }
+
+    /**
+     * VLAN trunk tag for use on the access interface
+     *
+     * @return the vlan tag or boost::none if no vlan tag is set
+     */
+    const boost::optional<uint16_t>& getAccessIfaceVlan() const {
+        return accessIfaceVlan;
+    }
+
+    /**
+     * Set the VLAN trunk tag for use on the access interface
+     *
+     * @param accessIfaceVlan the vlan tag
+     */
+    void setAccessIfaceVlan(uint16_t accessIfaceVlan) {
+        this->accessIfaceVlan = accessIfaceVlan;
+    }
+
+    /**
+     * Unset the access interface vlan trunk tag.
+     */
+    void unsetAccessIfaceVlan() {
+        accessIfaceVlan = boost::none;
+    }
+
+    /**
+     * The name of the interface on the access bridge that should be
+     * used for uplinking to the integration bridge.
+     *
+     * @return the interface name or boost::none if no interface name
+     * is set.
+     */
+    const boost::optional<std::string>& getAccessUplinkInterface() const {
+        return accessUplinkInterface;
+    }
+
+    /**
+     * Set the access uplink interface name to the string specified.
+     *
+     * @param accessUplinkInterface the interface name to which the endpoint
+     * is attached locally
+     */
+    void setAccessUplinkInterface(const std::string& accessUplinkInterface) {
+        this->accessUplinkInterface = accessUplinkInterface;
+    }
+
+    /**
+     * Unset the access uplink interface name
+     */
+    void unsetAccessUplinkInterface() {
+        accessUplinkInterface = boost::none;
     }
 
     /**
@@ -218,6 +408,27 @@ public:
      */
     bool isPromiscuousMode() const {
         return promiscuousMode;
+    }
+
+    /**
+     * Set the discovery proxy mode flag.  If true, then the vswitch
+     * will respond to any ARP or neighbor discovery requests for all
+     * IP addresses configured for the endpoint
+     *
+     * @param discoveryProxyMode the new value for the promiscuous
+     * mode
+     */
+    void setDiscoveryProxyMode(bool discoveryProxyMode) {
+        this->discoveryProxyMode = discoveryProxyMode;
+    }
+
+    /**
+     * Get the value of the discovery proxy mode flag
+     *
+     * @return true if discovery proxy mode is on
+     */
+    bool isDiscoveryProxyMode() const {
+        return discoveryProxyMode;
     }
 
     /**
@@ -240,7 +451,7 @@ public:
     /**
      * A string to string mapping
      */
-    typedef boost::unordered_map<std::string, std::string> attr_map_t;
+    typedef std::unordered_map<std::string, std::string> attr_map_t;
 
     /**
      * Get a reference to a map of name/value attributes
@@ -280,6 +491,7 @@ public:
         const std::vector<std::string>& getDnsServers() const {
             return dnsServers;
         }
+
     private:
         std::vector<std::string> dnsServers;
     };
@@ -329,6 +541,26 @@ public:
          */
         void setPrefixLen(uint8_t prefixLen) {
             this->prefixLen = prefixLen;
+        }
+
+        /**
+         * Get the IP address to return as the server IP address in
+         * DHCP replies.
+         *
+         * @return the IP address
+         */
+        const boost::optional<std::string>& getServerIp() const {
+            return serverIp;
+        }
+
+        /**
+         * Get the IP address to return as the server IP address in
+         * DHCP replies.
+         *
+         * @param serverIp the IP address
+         */
+        void setServerIp(const std::string& serverIp) {
+            this->serverIp = serverIp;
         }
 
         /**
@@ -437,12 +669,51 @@ public:
             return staticRoutes;
         }
 
+        /**
+         * Get the interface MTU to set for this endpoint
+         *
+         * @return the interface MTU
+         */
+        const boost::optional<uint16_t> getInterfaceMtu() const {
+            return interfaceMtu;
+        }
+
+        /**
+         * Set the interface MTU to set for this endpoint
+         *
+         * @param interfaceMtu the interface MTU
+         */
+        void setInterfaceMtu(uint16_t interfaceMtu) {
+            this->interfaceMtu = interfaceMtu;
+        }
+
+        /**
+         * Get the lease time for this endpoint
+         *
+         * @return the lease time
+         */
+        const boost::optional<uint32_t> getLeaseTime() const {
+            return leaseTime;
+        }
+
+        /**
+         * Set the DHCP lease time for this endpoint
+         *
+         * @param leaseTime the lease time
+         */
+        void setLeaseTime(uint32_t leaseTime) {
+            this->leaseTime = leaseTime;
+        }
+
     private:
         boost::optional<std::string> ipAddress;
         boost::optional<uint8_t> prefixLen;
+        boost::optional<std::string> serverIp;
         std::vector<std::string> routers;
         boost::optional<std::string> domain;
         std::vector<static_route_t> staticRoutes;
+        boost::optional<uint16_t> interfaceMtu;
+        boost::optional<uint32_t> leaseTime;
     };
 
     /**
@@ -477,8 +748,86 @@ public:
             return searchList;
         }
 
+        /**
+         * Get the t1 time (the time before client should contact dhcp
+         * server to renew)
+         *
+         * @return the t1 time
+         */
+        const boost::optional<uint32_t> getT1() const {
+            return t1;
+        }
+
+        /**
+         * Set the t1 time
+         *
+         * @param t1 the lease time
+         */
+        void setT1(uint32_t t1) {
+            this->t1 = t1;
+        }
+
+        /**
+         * Get the t2 time (the time before client should broadcast
+         * renewal attempt)
+         *
+         * @return the t2 time
+         */
+        const boost::optional<uint32_t> getT2() const {
+            return t2;
+        }
+
+        /**
+         * Set the t2 time
+         *
+         * @param t2 the t2 time
+         */
+        void setT2(uint32_t t2) {
+            this->t2 = t2;
+        }
+
+        /**
+         * Get the valid lifetime for the IPv6 address
+         *
+         * @return the valid lifetime
+         */
+        const boost::optional<uint32_t> getValidLifetime() const {
+            return validLifetime;
+        }
+
+        /**
+         * Set the valid lifetime
+         *
+         * @param validLifetime the valid lifetime
+         */
+        void setValidLifetime(uint32_t validLifetime) {
+            this->validLifetime = validLifetime;
+        }
+
+        /**
+         * Get the preferred lifetime for the IPv6 address
+         *
+         * @return the preferred lifetime
+         */
+        const boost::optional<uint32_t> getPreferredLifetime() const {
+            return preferredLifetime;
+        }
+
+        /**
+         * Set the preferred lifetime
+         *
+         * @param preferredLifetime the preferred lifetime
+         */
+        void setPreferredLifetime(uint32_t preferredLifetime) {
+            this->preferredLifetime = preferredLifetime;
+        }
+
     private:
         std::vector<std::string> searchList;
+        boost::optional<uint32_t> t1;
+        boost::optional<uint32_t> t2;
+        boost::optional<uint32_t> validLifetime;
+        boost::optional<uint32_t> preferredLifetime;
     };
 
     /**
@@ -526,7 +875,7 @@ public:
         /**
          * Construct a new address mapping
          *
-         * @param uuid a unique ID for this address mapping
+         * @param uuid_ a unique ID for this address mapping
          */
         IPAddressMapping(const std::string& uuid_) : uuid(uuid_) { }
 
@@ -559,7 +908,7 @@ public:
         /**
          * Set the IP address for the address mapping
          *
-         * @param ip the IP address
+         * @param floatingIp the IP address
          */
         void setFloatingIP(const std::string& floatingIp) {
             this->floatingIp = floatingIp;
@@ -640,7 +989,7 @@ public:
         /**
          * Set the next hop MAC address for the endpoint
          *
-         * @param mac the MAC address
+         * @param nextHopMac the MAC address
          */
         void setNextHopMAC(const opflex::modb::MAC& nextHopMac) {
             this->nextHopMac = nextHopMac;
@@ -692,6 +1041,21 @@ public:
     };
 
     /**
+     * Functor for storing an IPAddressMapping as hash key
+     */
+    struct IPAddressMappingHash {
+        /**
+         * Hash the address mapping
+         */
+        size_t operator()(const IPAddressMapping& m) const noexcept;
+    };
+
+    /**
+     * A set of address mapping hash objects
+     */
+    typedef std::unordered_set<IPAddressMapping, IPAddressMappingHash> ipam_set;
+
+    /**
      * Clear the list of address mappings
      */
     void clearIPAddressMappings() {
@@ -701,7 +1065,7 @@ public:
     /**
      * Add a address mapping to the endpoint
      *
-     * @param iPAddressMapping the address mapping object
+     * @param ipAddressMapping the address mapping object
      */
     void addIPAddressMapping(const IPAddressMapping& ipAddressMapping);
 
@@ -710,22 +1074,136 @@ public:
      *
      * @return a set of address mapping objects
      */
-    const boost::unordered_set<IPAddressMapping>& getIPAddressMappings() const {
+    const ipam_set& getIPAddressMappings() const {
         return ipAddressMappings;
+    }
+
+    /**
+     * An attestation can be used by the endpoint registry to confirm
+     * the validity of a reported endpoint.
+     */
+    class Attestation {
+    public:
+        /**
+         * Construct a new attestation
+         *
+         * @param name_ a name for this attestation unique for the
+         * endpoint
+         */
+        Attestation(const std::string& name_) : name(name_) { }
+
+        /**
+         * Get the name for this attestation
+         * @return the name
+         */
+        const std::string& getName() const {
+            return name;
+        }
+
+        /**
+         * Get the validator for this endpoint.  This is an encoded
+         * string that provides validation for the information in the
+         * endpoint.
+         *
+         * @return the validator
+         */
+        const boost::optional<std::string>& getValidator() const {
+            return validator;
+        }
+
+        /**
+         * Set the validator for the endpoint.  This is an encoded
+         * string that provides validation for the information in the
+         * endpoint.
+         *
+         * @param validator the validator string
+         */
+        void setValidator(const std::string& validator) {
+            this->validator = validator;
+        }
+
+        /**
+         * Unset the validator
+         */
+        void unsetValidator() {
+            validator = boost::none;
+        }
+
+        /**
+         * Get the validator MAC for this endpoint's validator.
+         *
+         * @return the validatorMac
+         */
+        const boost::optional<std::string>& getValidatorMac() const {
+            return validatorMac;
+        }
+
+        /**
+         * Set the validator MAC for this endpoint's validator.  The
+         * validator MAC authenticates the validator.
+         *
+         * @param validatorMac the validator MAC encoded string
+         */
+        void setValidatorMac(const std::string& validatorMac) {
+            this->validatorMac = validatorMac;
+        }
+
+        /**
+         * Unset the validatorMac
+         */
+        void unsetValidatorMac() {
+            validatorMac = boost::none;
+        }
+
+    private:
+        std::string name;
+        boost::optional<std::string> validator;
+        boost::optional<std::string> validatorMac;
+    };
+
+    /**
+     * Clear the list of attestations
+     */
+    void clearAttestations() {
+        attestations.clear();
+    }
+
+    /**
+     * Add a address mapping to the endpoint
+     *
+     * @param attestation the address mapping object
+     */
+    void addAttestation(const Attestation& attestation);
+
+    /**
+     * Get the set of address mappings for the endpoint
+     *
+     * @return a set of address mapping objects
+     */
+    const std::vector<Attestation>& getAttestations() const {
+        return attestations;
     }
 
 private:
     std::string uuid;
     boost::optional<opflex::modb::MAC> mac;
-    boost::unordered_set<std::string> ips;
+    std::unordered_set<std::string> ips;
+    std::unordered_set<std::string> anycastReturnIps;
+    virt_ip_set virtualIps;
     boost::optional<std::string> egMappingAlias;
     boost::optional<opflex::modb::URI> egURI;
+    std::set<opflex::modb::URI> securityGroups;
     boost::optional<std::string> interfaceName;
+    boost::optional<std::string> accessInterface;
+    boost::optional<uint16_t> accessIfaceVlan;
+    boost::optional<std::string> accessUplinkInterface;
     bool promiscuousMode;
+    bool discoveryProxyMode;
     attr_map_t attributes;
     boost::optional<DHCPv4Config> dhcpv4Config;
     boost::optional<DHCPv6Config> dhcpv6Config;
-    boost::unordered_set<IPAddressMapping> ipAddressMappings;
+    ipam_set ipAddressMappings;
+    std::vector<Attestation> attestations;
 };
 
 /**

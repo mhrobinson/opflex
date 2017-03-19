@@ -15,7 +15,6 @@
 #define MODB_OBJECTSTORE_H
 
 #include <boost/noncopyable.hpp>
-#include <boost/shared_ptr.hpp>
 #include <list>
 #include <uv.h>
 
@@ -31,7 +30,7 @@ namespace modb {
 
 /**
  * @brief Main interface into the managed object database.
- * 
+ *
  * The MODB allows you to store and look up managed objects, and get
  * notifications when objects change.
  */
@@ -40,7 +39,7 @@ public:
     /**
      * Construct a new, empty managed object database.
      */
-    ObjectStore();
+    ObjectStore(util::ThreadManager& threadManager);
 
     /**
      * Destroy the MODB
@@ -116,15 +115,14 @@ public:
     /**
      * Unregister the specified listener from the specified class ID.
      *
-     * @param class_id the class ID 
+     * @param class_id the class ID
      * @param listener the listener to unregister
-     * @throws std::out_of_range if there is no such class
      */
     void unregisterListener(class_id_t class_id, ObjectListener* listener);
 
     /**
      * Get a store client for the specified owner.
-     * 
+     *
      * @param owner the owner field that governs which fields can be edited
      * by the store client
      * @return the store client.  This memory is owned by the object
@@ -146,7 +144,7 @@ public:
     /**
      * Get a store client for the owner associated with the specified
      * class ID
-     * 
+     *
      * @param class_id The class ID.
      * @return the store client.  This memory is owned by the object
      * store and must not be freed by the caller.
@@ -172,7 +170,7 @@ public:
      * is where all the actual object data will be stored.  This is
      * not needed under ordinary circumstances.
      *
-     * @param class_id The class ID 
+     * @param class_id The class ID
      * @return a pointer to the region.  This is owned by the object
      * store and should not be freed by the caller.
      * @throws std::out_of_range if there is no region for the class ID
@@ -184,7 +182,7 @@ public:
      *
      * @param output a set to receive the owners
      */
-    void getOwners(/* out */ boost::unordered_set<std::string>& output);
+    void getOwners(/* out */ OF_UNORDERED_SET<std::string>& output);
 
 private:
     struct ClassContext {
@@ -193,10 +191,10 @@ private:
         Region* region;
     };
 
-    typedef boost::unordered_map<std::string, Region*> region_owner_map_t;
-    typedef boost::unordered_map<class_id_t, ClassContext> class_map_t;
-    typedef boost::unordered_map<std::string, ClassInfo*> class_name_map_t;
-    typedef boost::unordered_map<prop_id_t, ClassInfo*> prop_map_t;
+    typedef OF_UNORDERED_MAP<std::string, Region*> region_owner_map_t;
+    typedef OF_UNORDERED_MAP<class_id_t, ClassContext> class_map_t;
+    typedef OF_UNORDERED_MAP<std::string, ClassInfo*> class_name_map_t;
+    typedef OF_UNORDERED_MAP<prop_id_t, ClassInfo*> prop_map_t;
 
     /**
      * Lookup region by owner
@@ -227,7 +225,7 @@ private:
      */
     mointernal::StoreClient readOnlyClient;
 
-    /** 
+    /**
      * handle items from the notification queue
      */
     class NotifQueueProc : public URIQueue::QProcessor {
@@ -235,8 +233,9 @@ private:
         NotifQueueProc(ObjectStore* store);
 
         // notify all the listeners
-        virtual void processItem(const URI& uri, 
+        virtual void processItem(const URI& uri,
                                  const boost::any& data);
+        virtual const std::string& taskName();
     private:
         ObjectStore* store;
     };
@@ -246,7 +245,7 @@ private:
      */
     NotifQueueProc notif_proc;
     URIQueue notif_queue;
-    
+
     /**
      * Mutex for accessing listeners
      */

@@ -46,8 +46,10 @@ core_includedir = $(includedir)/opflex/ofcore
 core_include_HEADERS = \
 	include/opflex/ofcore/OFFramework.h \
 	include/opflex/ofcore/PeerStatusListener.h \
+	include/opflex/ofcore/MainLoopAdaptor.h \
 	include/opflex/ofcore/InspectorClient.h \
-	include/opflex/ofcore/OFConstants.h 
+	include/opflex/ofcore/OFConstants.h \
+	include/opflex/ofcore/OFTypes.h
 test_includedir = $(includedir)/opflex/test
 test_include_HEADERS = \
 	include/opflex/test/MockOpflexServer.h 
@@ -130,9 +132,13 @@ srpm: dist rpm/${PACKAGE}.spec
 	cp rpm/SRPMS/*.rpm .
 	rm -rf ${RPMDIRS}
 
+EXTRA_DIST += debian/libopflex.install debian/libopflex-dev.install \
+	debian/changelog debian/compat debian/control \
+	debian/copyright debian/rules debian/source/format
+
 # Set env var DEB_BUILD_OPTIONS="parallel=<#cores>" to speed up package builds
-DEB_PKG_DIR=deb
-deb: dist
+DEB_PKG_DIR=deb-pkg-build
+deb: dist deb-pkg-build
 	- rm -rf  $(DEB_PKG_DIR)
 	mkdir -p $(DEB_PKG_DIR)
 	cp $(SOURCE_FILE) $(DEB_PKG_DIR)/
@@ -140,6 +146,15 @@ deb: dist
 	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
 	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
 		VERSION_WITH_BUILD=$(VERSION)-$(SDK_BVERSION) \
-		dpkg-buildpackage -d -us -uc -rfakeroot -b
+		dpkg-buildpackage -us -uc -rfakeroot -b
 	cp $(DEB_PKG_DIR)/*.deb .
 	rm -rf $(DEB_PKG_DIR)
+
+dsc: dist
+	- rm -rf  $(DEB_PKG_DIR)
+	mkdir -p $(DEB_PKG_DIR)
+	cp $(SOURCE_FILE) $(DEB_PKG_DIR)/
+	tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)
+	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
+	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
+		dpkg-buildpackage -d -us -uc -rfakeroot -S

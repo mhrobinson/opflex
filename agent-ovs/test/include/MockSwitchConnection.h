@@ -11,6 +11,9 @@
 #define OVSAGENT_TEST_MOCKSWITCHCONNECTION_H_
 
 #include "SwitchConnection.h"
+#include "ovs-ofputil.h"
+
+namespace ovsagent {
 
 /**
  * Mock switch connection object useful for tests
@@ -25,13 +28,19 @@ public:
     }
 
     virtual void clear() {
-        BOOST_FOREACH(ofpbuf* msg, sentMsgs) {
+        for (ofpbuf* msg : sentMsgs) {
             ofpbuf_delete(msg);
         }
         sentMsgs.clear();
     }
 
-    virtual ofp_version GetProtocolVersion() { return OFP13_VERSION; }
+    virtual int Connect(int protoVer) {
+        connected = true;
+        notifyConnectListeners();
+        return 0;
+    }
+
+    virtual int GetProtocolVersion() { return OFP13_VERSION; }
 
     virtual int SendMessage(ofpbuf *msg) {
         sentMsgs.push_back(msg);
@@ -43,5 +52,7 @@ public:
     bool connected;
     std::vector<ofpbuf*> sentMsgs;
 };
+
+} // namespace ovsagent
 
 #endif /* OVSAGENT_TEST_MOCKSWITCHCONNECTION_H_ */

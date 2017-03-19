@@ -9,19 +9,18 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <syslog.h>
+#include "logging.h"
+#include "AgentLogHandler.h"
+
+#include <opflex/logging/OFLogHandler.h>
+#include <boost/date_time/posix_time/posix_time.hpp>
+#include <openvswitch/vlog.h>
 
 #include <algorithm>
 #include <fstream>
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/lock_guard.hpp>
+#include <mutex>
 
-#include <opflex/logging/OFLogHandler.h>
-
-#include "ovs.h"
-#include "logging.h"
-#include "AgentLogHandler.h"
+#include <syslog.h>
 
 using opflex::logging::OFLogHandler;
 
@@ -41,7 +40,10 @@ public:
      * Constructor that accepts the output stream to write logs to.
      * @param outStream The stream to send messages to.
      */
-    OStreamLogSink(std::ostream& outStream) : out(&outStream) {}
+    OStreamLogSink(std::ostream& outStream) : out(&outStream) {
+        static const boost::posix_time::time_facet facet;
+        out->imbue(std::locale(out->getloc(), &facet));
+    }
 
     /**
      * Constructor that accepts the name of a file where log messages will be
@@ -69,7 +71,7 @@ public:
         case ERROR:   levelStr = LEVEL_STR_ERROR; break;
         case FATAL:   levelStr = LEVEL_STR_FATAL; break;
         }
-        boost::lock_guard<boost::mutex> lock(logMtx);
+        std::lock_guard<std::mutex> lock(logMtx);
         (*out) << "[" << boost::posix_time::microsec_clock::local_time()
             << "] [" << levelStr << "] [" << filename << ":" << lineno << ":"
             << functionName << "] " << message << std::endl;
@@ -78,7 +80,7 @@ public:
 private:
     std::fstream fileStream;
     std::ostream *out;
-    boost::mutex logMtx;
+    std::mutex logMtx;
     static const char * LEVEL_STR_DEBUG;
     static const char * LEVEL_STR_INFO;
     static const char * LEVEL_STR_WARNING;
@@ -97,8 +99,8 @@ const char * OStreamLogSink::LEVEL_STR_FATAL = "fatal";
  */
 class SyslogLogSink : public LogSink {
 public:
-    SyslogLogSink() {
-        openlog("agent-ovs", LOG_CONS | LOG_PID, LOG_DAEMON);
+    SyslogLogSink(const std::string& name) : syslog_name(name) {
+        openlog(syslog_name.c_str(), LOG_CONS | LOG_PID, LOG_DAEMON);
     }
     ~SyslogLogSink() {
         closelog();
@@ -118,6 +120,9 @@ public:
                "[%s:%d:%s] %s",
                filename, lineno, functionName, message.c_str());
     }
+
+private:
+    std::string syslog_name;
 };
 
 static OStreamLogSink consoleLogSink(std::cout);
@@ -129,9 +134,10 @@ LogSink * getLogSink() {
 
 void initLogging(const std::string& levelstr,
                  bool toSyslog,
-                 const std::string& log_file) {
+                 const std::string& log_file,
+                 const std::string& syslog_name) {
     if (toSyslog) {
-        currentLogSink = new SyslogLogSink();
+        currentLogSink = new SyslogLogSink(syslog_name);
     } else if (!log_file.empty()) {
         currentLogSink = new OStreamLogSink(log_file);
     }

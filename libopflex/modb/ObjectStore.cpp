@@ -25,11 +25,10 @@ namespace opflex {
 namespace modb {
 
 using mointernal::StoreClient;
-using boost::unordered_set;
 
-ObjectStore::ObjectStore() 
+ObjectStore::ObjectStore(util::ThreadManager& threadManager_)
     : systemClient(this, NULL), readOnlyClient(this, NULL, true),
-      notif_proc(this), notif_queue(&notif_proc) {
+      notif_proc(this), notif_queue(&notif_proc, threadManager_) {
     uv_mutex_init(&listener_mutex);
 }
 
@@ -37,7 +36,7 @@ ObjectStore::~ObjectStore() {
     stop();
 
     region_owner_map_t::const_iterator it;
-    for (it = region_owner_map.begin(); 
+    for (it = region_owner_map.begin();
          it != region_owner_map.end(); it++) {
         delete it->second;
     }
@@ -47,7 +46,7 @@ ObjectStore::~ObjectStore() {
 
 void ObjectStore::init(const ModelMetadata& model) {
     std::vector<ClassInfo>::const_iterator it;
-    for (it = model.getClasses().begin(); 
+    for (it = model.getClasses().begin();
          it != model.getClasses().end();
          ++it) {
 
@@ -70,19 +69,24 @@ void ObjectStore::init(const ModelMetadata& model) {
     }
 }
 
-ObjectStore::NotifQueueProc::NotifQueueProc(ObjectStore* store_) 
+ObjectStore::NotifQueueProc::NotifQueueProc(ObjectStore* store_)
     : store(store_) {}
 
-void ObjectStore::NotifQueueProc::processItem(const URI& uri, 
+void ObjectStore::NotifQueueProc::processItem(const URI& uri,
                                               const boost::any& data) {
     util::LockGuard guard(&store->listener_mutex);
     std::list<ObjectListener*>::const_iterator it;
     class_id_t class_id = boost::any_cast<class_id_t>(data);
-    std::list<ObjectListener*>& listeners = 
+    std::list<ObjectListener*>& listeners =
         store->class_map.at(class_id).listeners;
     for (it = listeners.begin(); it != listeners.end(); ++it) {
         (*it)->objectUpdated(class_id, uri);
     }
+}
+
+const std::string& ObjectStore::NotifQueueProc::taskName() {
+    static const std::string name("modb_notif");
+    return name;
 }
 
 void ObjectStore::start() {
@@ -104,7 +108,7 @@ Region* ObjectStore::getRegion(class_id_t class_id) {
     return class_map.at(class_id).region;
 }
 
-void ObjectStore::getOwners(/* out */ unordered_set<std::string>& output) {
+void ObjectStore::getOwners(/* out */ OF_UNORDERED_SET<std::string>& output) {
     BOOST_FOREACH(const region_owner_map_t::value_type v, region_owner_map) {
         output.insert(v.first);
     }
@@ -140,16 +144,18 @@ void ObjectStore::forEachClass(void (*apply)(void*, const ClassInfo&), void* dat
     }
 }
 
-void ObjectStore::registerListener(class_id_t class_id, 
+void ObjectStore::registerListener(class_id_t class_id,
                                    ObjectListener* listener) {
     util::LockGuard guard(&listener_mutex);
     class_map.at(class_id).listeners.push_back(listener);
 }
 
-void ObjectStore::unregisterListener(class_id_t class_id, 
+void ObjectStore::unregisterListener(class_id_t class_id,
                                      ObjectListener* listener) {
     util::LockGuard guard(&listener_mutex);
-    class_map.at(class_id).listeners.remove(listener);
+    class_map_t::iterator it = class_map.find(class_id);
+    if (it == class_map.end()) return;
+    it->second.listeners.remove(listener);
 }
 
 void ObjectStore::queueNotification(class_id_t class_id, const URI& uri) {

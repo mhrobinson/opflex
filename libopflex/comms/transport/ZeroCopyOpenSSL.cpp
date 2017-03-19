@@ -31,13 +31,6 @@ namespace {
 
     bool const SSL_ERROR = true;
 
-    char const * safe_strerror(int error_no) {
-        if ((error_no >= sys_nerr) || (error_no < 0)) {
-            return "Unknown error";
-        }
-        return sys_errlist[errno];
-    }
-
 }
 
 #define                                                           \
@@ -954,12 +947,16 @@ size_t ZeroCopyOpenSSL::Ctx::addCaFileOrDirectory(
 
     struct stat s;
     if (stat(caFileOrDirectory, &s)) {
+        char buf[256];
+        if (0 != strerror_r(errno, buf, sizeof(buf))) {
+            buf[0] = '\0';
+        }
 
         LOG(ERROR)
             << "Error ["
             << errno
             << "] (\""
-            << safe_strerror(errno)
+            << buf
             << "\") on path \""
             << caFileOrDirectory
             << "\" does not exist"
@@ -1073,61 +1070,63 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
 
     size_t failure = 0;
 
-    if (!failure) {
+    Ctx * ctx = new (std::nothrow) Ctx(sslCtx, passphrase);
 
-        Ctx * ctx = new (std::nothrow) Ctx(sslCtx, passphrase);
+    if (!ctx) {
 
-        if (!ctx) {
+        ++failure;
+        LOG(ERROR)
+            << "Failed to create ZeroCopyOpenSSL::Ctx"
+        ;
 
-            ++failure;
-            LOG(ERROR)
-                << "Failed to create ZeroCopyOpenSSL::Ctx"
-            ;
+        SSL_CTX_free(sslCtx);
+
+    } else {
+
+        /* This needs to be done before invoking SSL_CTX_use_PrivateKey_file()
+         * and irrespectively of whether a passphrase was provided or not.
+         * Otherwise if the certificate has an encrypted private key and
+         * createCtx() was invoked without a passphrase, OpenSSL would always
+         * resort to asking for the passphrase from the standand input, hence
+         * blocking forever the progress of the current thread.
+         */
+
+        SSL_CTX_set_default_passwd_cb(sslCtx, pwdCb);
+        SSL_CTX_set_default_passwd_cb_userdata(sslCtx, ctx); /* Important! */
+
+        if (caFileOrDirectory) {
+            failure += ctx->addCaFileOrDirectory(caFileOrDirectory);
+        }
+
+        if (keyAndCertFilePath) {
+            failure += ctx-> addPrivateKeyFile(keyAndCertFilePath);
+            failure += ctx->addCertificateFile(keyAndCertFilePath);
+        }
+
+        if (failure) {
+
+            delete ctx;
+            ctx = NULL;
 
         } else {
 
-            /* This needs to be done before invoking SSL_CTX_use_PrivateKey_file()
-             * and irrespectively of whether a passphrase was provided or not.
-             * Otherwise if the certificate has an encrypted private key and
-             * createCtx() was invoked without a passphrase, OpenSSL would always
-             * resort to asking for the passphrase from the standand input, hence
-             * blocking forever the progress of the current thread.
-             */
-
-            SSL_CTX_set_default_passwd_cb(sslCtx, pwdCb);
-            SSL_CTX_set_default_passwd_cb_userdata(sslCtx, ctx); /* Important! */
-
-            if (caFileOrDirectory) {
-                failure += ctx->addCaFileOrDirectory(caFileOrDirectory);
-            }
-
-            if (keyAndCertFilePath) {
-                failure += ctx-> addPrivateKeyFile(keyAndCertFilePath);
-                failure += ctx->addCertificateFile(keyAndCertFilePath);
-            }
-
-            if (failure) {
-
-                delete ctx;
-                ctx = NULL;
-
-            }
-
-
-        }
-
-        if (!failure) {
-
             SSL_CTX_set_info_callback(sslCtx, infoCallback);
+
+            /* just ask for a certificate from the peer anyway */
+            (void) SSL_CTX_set_verify(
+                    sslCtx,
+                    SSL_VERIFY_PEER,
+                    NULL);
 
             /* GREAT SUCCESS! */
             return ctx;
 
         }
 
-        assert(!ctx);
-        /* FALL-THROUGH */
     }
+
+    assert(!ctx);
+    /* FALL-THROUGH */
 
     LOG(ERROR)
         << "Encountered "
@@ -1135,9 +1134,27 @@ ZeroCopyOpenSSL::Ctx * ZeroCopyOpenSSL::Ctx::createCtx(
         << " failure(s)"
     ;
 
-    SSL_CTX_free(sslCtx);
-
     return NULL;
+}
+
+void ZeroCopyOpenSSL::Ctx::setVerify(
+        int (*verify_callback)(int, X509_STORE_CTX *)) {
+
+    (void) SSL_CTX_set_verify(
+            sslCtx_,
+            SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+            verify_callback);
+
+}
+
+void ZeroCopyOpenSSL::Ctx::setNoVerify(
+        int (*verify_callback)(int, X509_STORE_CTX *)) {
+
+    (void) SSL_CTX_set_verify(
+            sslCtx_,
+            SSL_VERIFY_NONE,
+            verify_callback);
+
 }
 
 bool ZeroCopyOpenSSL::attachTransport(

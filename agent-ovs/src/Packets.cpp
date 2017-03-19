@@ -6,21 +6,24 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-#include <sstream>
-#include <netinet/ip.h>
-
-#include <boost/system/error_code.hpp>
-#include <boost/asio/ip/address.hpp>
-#include <boost/foreach.hpp>
-#include <boost/algorithm/string/split.hpp>
-#include <boost/algorithm/string/classification.hpp>
-#include <modelgbp/gbp/AutoconfigEnumT.hpp>
-
 #include "Packets.h"
 #include "dhcp.h"
 #include "udp.h"
 #include "logging.h"
 #include "arp.h"
+#include "eth.h"
+#include "ovs-shim.h"
+#include "ovs-ofpbuf.h"
+
+#include <boost/asio/ip/address.hpp>
+#include <boost/system/error_code.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/lexical_cast.hpp>
+#include <modelgbp/gbp/AutoconfigEnumT.hpp>
+
+#include <sstream>
+#include <netinet/ip.h>
 
 namespace ovsagent {
 namespace packets {
@@ -31,11 +34,13 @@ const uint8_t MAC_ADDR_MULTICAST[6] =
     {0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
 const uint8_t MAC_ADDR_IPV6MULTICAST[6] =
     {0x33, 0x33, 0x00, 0x00, 0x00, 0x01};
+const uint8_t MAC_ADDR_ZERO[6] =
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 using std::string;
 using std::stringbuf;
 using std::vector;
-using boost::shared_ptr;
+using std::shared_ptr;
 using boost::optional;
 using boost::asio::ip::address;
 using boost::asio::ip::address_v4;
@@ -72,21 +77,39 @@ void construct_auto_ip(boost::asio::ip::address_v6 prefix,
     memcpy(((char*)dstAddr) + 13, srcMac+3, 3);
 }
 
+address_v6 construct_auto_ip_addr(address_v6 prefix,
+                                  const uint8_t* srcMac) {
+    address_v6::bytes_type ip;
+    construct_auto_ip(prefix, srcMac, (struct in6_addr*)ip.data());
+    return address_v6(ip);
+}
+
+address_v6 construct_link_local_ip_addr(const uint8_t* srcMac) {
+    return construct_auto_ip_addr(address_v6::from_string("fe80::"),
+                                  srcMac);
+}
+
+address_v6 construct_link_local_ip_addr(const opflex::modb::MAC& srcMac) {
+    uint8_t bytes[6];
+    srcMac.toUIntArray(bytes);
+    return construct_auto_ip_addr(address_v6::from_string("fe80::"),
+                                  bytes);
+}
+
+address_v6 construct_solicited_node_ip(const address_v6& ip) {
+    static const uint8_t solicitedPrefix[13] =
+        {0xff, 0x02, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0xff};
+    address_v6::bytes_type bytes = ip.to_bytes();
+    memcpy(bytes.data(), solicitedPrefix, sizeof(solicitedPrefix));
+    return address_v6(bytes);
+}
+
 void compute_ipv6_subnet(boost::asio::ip::address_v6 netAddr,
                          uint8_t prefixLen,
                          /* out */ struct in6_addr* mask,
                          /* out */ struct in6_addr* addr) {
     std::memcpy(addr, netAddr.to_bytes().data(), sizeof(struct in6_addr));
-
-    if (prefixLen == 0) {
-        memset(mask, 0, sizeof(struct in6_addr));
-    } else if (prefixLen <= 64) {
-        ((uint64_t*)mask)[0] = htonll(~((uint64_t)0) << (64 - prefixLen));
-        ((uint64_t*)mask)[1] = 0;
-    } else {
-        ((uint64_t*)mask)[0] = ~((uint64_t)0);
-        ((uint64_t*)mask)[1] = htonll(~((uint64_t)0) << (128 - prefixLen));
-    }
+    get_subnet_mask_v6(prefixLen, mask);
     ((uint64_t*)addr)[0] &= ((uint64_t*)mask)[0];
     ((uint64_t*)addr)[1] &= ((uint64_t*)mask)[1];
 
@@ -115,13 +138,13 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
     PolicyManager::subnet_vector_t subnets;
     PolicyManager::subnet_vector_t ipv6Subnets;
     polMgr.getSubnetsForGroup(egUri, subnets);
-    BOOST_FOREACH(shared_ptr<Subnet>& sn, subnets) {
+    for (shared_ptr<Subnet>& sn : subnets) {
         optional<const string&> networkAddrStr = sn->getAddress();
         if (!networkAddrStr) continue;
         boost::system::error_code ec;
         address networkAddr = address::from_string(networkAddrStr.get(), ec);
         if (ec) continue;
-        
+
         if (networkAddr.is_v6())
             ipv6Subnets.push_back(sn);
     }
@@ -135,7 +158,7 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
         + (mtu == 0 ? 0 : sizeof(struct nd_opt_mtu)) +
         sizeof(struct nd_opt_prefix_info) * ipv6Subnets.size() +
         sizeof(struct nd_opt_def_route_info);
-    size_t len = sizeof(struct eth_header) + 
+    size_t len = sizeof(eth::eth_header) +
         sizeof(struct ip6_hdr) +
         payloadLen;
 
@@ -151,14 +174,14 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
     defroute->nd_opt_ri_lifetime = 0xffffffff;
 
     // prefix information
-    BOOST_FOREACH(shared_ptr<Subnet>& sn, ipv6Subnets) {
+    for (shared_ptr<Subnet>& sn : ipv6Subnets) {
         optional<const string&> networkAddrStr = sn->getAddress();
         if (!networkAddrStr) continue;
-        
+
         boost::system::error_code ec;
         address networkAddr = address::from_string(networkAddrStr.get(), ec);
         if (ec) continue;
-        
+
         if (!networkAddr.is_v6()) continue;
 
         struct nd_opt_prefix_info* prefix = (struct nd_opt_prefix_info*)
@@ -168,9 +191,9 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
         prefix->nd_opt_pi_len = 4;
         prefix->nd_opt_pi_prefix_len = sn->getPrefixLen(64);
         prefix->nd_opt_pi_flags_reserved = ND_OPT_PI_FLAG_ONLINK;
-        prefix->nd_opt_pi_valid_time = 
+        prefix->nd_opt_pi_valid_time =
             htonl(sn->getIpv6AdvValidLifetime(2592000));
-        prefix->nd_opt_pi_preferred_time = 
+        prefix->nd_opt_pi_preferred_time =
             htonl(sn->getIpv6AdvPreferredLifetime(604800));
 
         if (sn->getIpv6AdvAutonomousFlag(1))
@@ -188,13 +211,13 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
         opt_mtu->nd_opt_mtu_len = 1;
         opt_mtu->nd_opt_mtu_mtu = htonl(mtu);
     }
-    
+
     // source link-layer address option
     struct nd_opt_hdr* source_ll = (struct nd_opt_hdr*)
         ofpbuf_push_zeros(b, sizeof(struct nd_opt_hdr) + 6);
     source_ll->nd_opt_type = ND_OPT_SOURCE_LINKADDR;
     source_ll->nd_opt_len = 1;
-    memcpy(((char*)source_ll)+2, srcMac, ETH_ADDR_LEN);
+    memcpy(((char*)source_ll)+2, srcMac, eth::ADDR_LEN);
 
     // fill in router advertisement
     struct nd_router_advert* router_ad = (struct nd_router_advert*)
@@ -212,32 +235,32 @@ ofpbuf* compose_icmp6_router_ad(const uint8_t* srcMac,
 
     struct ip6_hdr* ip6 = (struct ip6_hdr*)
         ofpbuf_push_zeros(b, sizeof(struct ip6_hdr));
-    struct eth_header* eth = (struct eth_header*)
-        ofpbuf_push_zeros(b, sizeof(struct eth_header));
+    eth::eth_header* eth = (eth::eth_header*)
+        ofpbuf_push_zeros(b, sizeof(eth::eth_header));
 
     // initialize ethernet header
-    memcpy(eth->eth_src, srcMac, ETH_ADDR_LEN);
-    memcpy(eth->eth_dst, dstMac, ETH_ADDR_LEN);
-    eth->eth_type = htons(ETH_TYPE_IPV6);
-    
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memcpy(eth->eth_dst, dstMac, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::IPV6);
+
     // Initialize IPv6 header
     ip6->ip6_vfc = 0x60;
     ip6->ip6_hlim = 255;
     ip6->ip6_nxt = 58;
     ip6->ip6_plen = htons(payloadLen);
-    
+
     // IPv6 link-local address made from the router MAC
-    construct_auto_ip(address_v6::from_string("fe80::"), srcMac, 
+    construct_auto_ip(address_v6::from_string("fe80::"), srcMac,
                       &ip6->ip6_src);
 
     memcpy(&ip6->ip6_dst, dstIp, sizeof(struct in6_addr));
-   
+
     // compute checksum
     uint32_t chksum = 0;
     // pseudoheader
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src,
                  sizeof(struct in6_addr));
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst,
                  sizeof(struct in6_addr));
     chksum_accum(chksum, (uint16_t*)&ip6->ip6_plen, 2);
     chksum += (uint16_t)htons(58);
@@ -254,15 +277,15 @@ ofpbuf* compose_icmp6_neigh_ad(uint32_t naFlags,
                                const struct in6_addr* srcIp,
                                const struct in6_addr* dstIp) {
     struct ofpbuf* b = NULL;
-    struct eth_header* eth = NULL;
+    eth::eth_header* eth = NULL;
     struct ip6_hdr* ip6 = NULL;
     uint16_t* payload;
     uint16_t payloadLen = 0;
 
     struct nd_neighbor_advert* neigh_ad = NULL;
     struct nd_opt_hdr* target_ll = NULL;
-    
-    size_t len = sizeof(struct eth_header) + 
+
+    size_t len = sizeof(eth::eth_header) +
         sizeof(struct ip6_hdr) +
         sizeof(struct nd_neighbor_advert) +
         sizeof(struct nd_opt_hdr) + 6;
@@ -270,24 +293,24 @@ ofpbuf* compose_icmp6_neigh_ad(uint32_t naFlags,
     ofpbuf_clear(b);
     ofpbuf_reserve(b, len);
     char* buf = (char*)ofpbuf_push_zeros(b, len);
-    eth = (struct eth_header*)buf;
-    buf += sizeof(struct eth_header);
+    eth = (eth::eth_header*)buf;
+    buf += sizeof(eth::eth_header);
     ip6 = (struct ip6_hdr*)buf;
     buf += sizeof(struct ip6_hdr);
     neigh_ad = (struct nd_neighbor_advert*)buf;
     buf += sizeof(struct nd_neighbor_advert);
     target_ll = (struct nd_opt_hdr*)buf;
     buf += sizeof(struct nd_opt_hdr) + 6;
-    
+
     payload = (uint16_t*)neigh_ad;
     payloadLen = sizeof(struct nd_neighbor_advert) +
             sizeof(struct nd_opt_hdr) + 6;
 
     // initialize ethernet header
-    memcpy(eth->eth_src, srcMac, ETH_ADDR_LEN);
-    memcpy(eth->eth_dst, dstMac, ETH_ADDR_LEN);
-    eth->eth_type = htons(ETH_TYPE_IPV6);
-    
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memcpy(eth->eth_dst, dstMac, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::IPV6);
+
     // Initialize IPv6 header
     ip6->ip6_vfc = 0x60;
     ip6->ip6_hlim = 255;
@@ -295,7 +318,7 @@ ofpbuf* compose_icmp6_neigh_ad(uint32_t naFlags,
     ip6->ip6_plen = htons(payloadLen);
     memcpy(&ip6->ip6_src, srcIp, sizeof(struct in6_addr));
     memcpy(&ip6->ip6_dst, dstIp, sizeof(struct in6_addr));
-    
+
     // fill in neighbor advertisement
     neigh_ad->nd_na_hdr.icmp6_type = ND_NEIGHBOR_ADVERT;
     neigh_ad->nd_na_hdr.icmp6_code = 0;
@@ -303,20 +326,93 @@ ofpbuf* compose_icmp6_neigh_ad(uint32_t naFlags,
     memcpy(&neigh_ad->nd_na_target, srcIp, sizeof(struct in6_addr));
     target_ll->nd_opt_type = ND_OPT_TARGET_LINKADDR;
     target_ll->nd_opt_len = 1;
-    memcpy(((char*)target_ll)+2, srcMac, ETH_ADDR_LEN);
-    
+    memcpy(((char*)target_ll)+2, srcMac, eth::ADDR_LEN);
+
     // compute checksum
     uint32_t chksum = 0;
     // pseudoheader
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src,
                  sizeof(struct in6_addr));
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst,
                  sizeof(struct in6_addr));
     chksum_accum(chksum, (uint16_t*)&ip6->ip6_plen, 2);
     chksum += (uint16_t)htons(58);
     // payload
     chksum_accum(chksum, payload, payloadLen);
     neigh_ad->nd_na_hdr.icmp6_cksum = chksum_finalize(chksum);
+
+    return b;
+}
+
+ofpbuf* compose_icmp6_neigh_solit(const uint8_t* srcMac,
+                                  const uint8_t* dstMac,
+                                  const struct in6_addr* srcIp,
+                                  const struct in6_addr* dstIp,
+                                  const struct in6_addr* targetIp) {
+    struct ofpbuf* b = NULL;
+    eth::eth_header* eth = NULL;
+    struct ip6_hdr* ip6 = NULL;
+    uint16_t* payload;
+    uint16_t payloadLen = 0;
+
+    struct nd_neighbor_solicit* neigh_sol = NULL;
+    struct nd_opt_hdr* source_ll = NULL;
+
+    size_t len = sizeof(eth::eth_header) +
+        sizeof(struct ip6_hdr) +
+        sizeof(struct nd_neighbor_solicit) +
+        sizeof(struct nd_opt_hdr) + 6;
+    b = ofpbuf_new(len);
+    ofpbuf_clear(b);
+    ofpbuf_reserve(b, len);
+    char* buf = (char*)ofpbuf_push_zeros(b, len);
+    eth = (eth::eth_header*)buf;
+    buf += sizeof(eth::eth_header);
+    ip6 = (struct ip6_hdr*)buf;
+    buf += sizeof(struct ip6_hdr);
+    neigh_sol = (struct nd_neighbor_solicit*)buf;
+    buf += sizeof(struct nd_neighbor_solicit);
+    source_ll = (struct nd_opt_hdr*)buf;
+    buf += sizeof(struct nd_opt_hdr) + 6;
+
+    payload = (uint16_t*)neigh_sol;
+    payloadLen = sizeof(struct nd_neighbor_solicit) +
+            sizeof(struct nd_opt_hdr) + 6;
+
+    // initialize ethernet header
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memcpy(eth->eth_dst, dstMac, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::IPV6);
+
+    // Initialize IPv6 header
+    ip6->ip6_vfc = 0x60;
+    ip6->ip6_hlim = 255;
+    ip6->ip6_nxt = 58;
+    ip6->ip6_plen = htons(payloadLen);
+    memcpy(&ip6->ip6_src, srcIp, sizeof(struct in6_addr));
+    memcpy(&ip6->ip6_dst, dstIp, sizeof(struct in6_addr));
+
+    // fill in neighbor solicitation
+    neigh_sol->nd_ns_hdr.icmp6_type = ND_NEIGHBOR_SOLICIT;
+    neigh_sol->nd_ns_hdr.icmp6_code = 0;
+    neigh_sol->nd_ns_reserved = 0;
+    memcpy(&neigh_sol->nd_ns_target, targetIp, sizeof(struct in6_addr));
+    source_ll->nd_opt_type = ND_OPT_SOURCE_LINKADDR;
+    source_ll->nd_opt_len = 1;
+    memcpy(((char*)source_ll)+2, srcMac, eth::ADDR_LEN);
+
+    // compute checksum
+    uint32_t chksum = 0;
+    // pseudoheader
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src,
+                 sizeof(struct in6_addr));
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst,
+                 sizeof(struct in6_addr));
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_plen, 2);
+    chksum += (uint16_t)htons(58);
+    // payload
+    chksum_accum(chksum, payload, payloadLen);
+    neigh_sol->nd_ns_hdr.icmp6_cksum = chksum_finalize(chksum);
 
     return b;
 }
@@ -340,10 +436,13 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
                              const uint8_t* clientMac,
                              uint32_t clientIp,
                              uint8_t prefixLen,
+                             const optional<string>& serverIpStr,
                              const vector<string>& routers,
                              const vector<string>& dnsServers,
                              const optional<string>& domain,
-                             const vector<static_route_t>& staticRoutes) {
+                             const vector<static_route_t>& staticRoutes,
+                             const optional<uint16_t>& interfaceMtu,
+                             const optional<uint32_t>& leaseTime) {
     using namespace dhcp;
     using namespace udp;
 
@@ -351,7 +450,7 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     // to run on ARM or Sparc I guess
 
     struct ofpbuf* b = NULL;
-    struct eth_header* eth = NULL;
+    eth::eth_header* eth = NULL;
     struct iphdr* ip = NULL;
     struct udp_hdr* udp = NULL;
     struct dhcp_hdr* dhcp = NULL;
@@ -363,6 +462,7 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     struct dhcp_option_hdr* lease_time = NULL;
     struct dhcp_option_hdr* server_identifier = NULL;
     struct dhcp_option_hdr* static_routes = NULL;
+    struct dhcp_option_hdr* iface_mtu = NULL;
     struct dhcp_option_hdr_base* end = NULL;
 
     boost::system::error_code ec;
@@ -372,32 +472,33 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     size_t dns_len = 0;
     size_t domain_len = 0;
     size_t static_route_len = 0;
+    size_t iface_mtu_len = 0;
 
     vector<address_v4> routerIps;
-    BOOST_FOREACH(const string& ipstr, routers) {
+    for (const string& ipstr : routers) {
         address_v4 ip = address_v4::from_string(ipstr, ec);
         if (ec) continue;
         routerIps.push_back(ip);
         if (routerIps.size() >= MAX_IP) break;
     }
-    if (routerIps.size() > 0) 
+    if (routerIps.size() > 0)
         router_len = 2 + 4*routerIps.size();
 
     vector<address_v4> dnsIps;
-    BOOST_FOREACH(const string& ipstr, dnsServers) {
+    for (const string& ipstr : dnsServers) {
         address_v4 ip = address_v4::from_string(ipstr, ec);
         if (ec) continue;
         dnsIps.push_back(ip);
         if (dnsIps.size() >= MAX_IP) break;
     }
-    if (dnsIps.size() >= 0) 
+    if (dnsIps.size() > 0)
         dns_len = 2 + 4*dnsIps.size();
 
     if (domain && domain.get().size() <= 255)
         domain_len = 2 + domain.get().size();
 
     vector<Routev4> routes;
-    BOOST_FOREACH(const static_route_t& route, staticRoutes) {
+    for (const static_route_t& route : staticRoutes) {
         address_v4 dst = address_v4::from_string(route.dest, ec);
         if (ec) continue;
         address_v4 nextHop = address_v4::from_string(route.nextHop, ec);
@@ -411,18 +512,22 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     }
     if (static_route_len > 0) static_route_len += 2;
 
-    size_t payloadLen = 
+    if (interfaceMtu)
+        iface_mtu_len = 4;
+
+    size_t payloadLen =
         sizeof(struct dhcp_hdr) +
         option::MESSAGE_TYPE_LEN + 2 +
         option::IP_LEN + 2 + /* subnet mask */
         router_len +
         dns_len +
         domain_len +
-        option::LEASE_TIME_LEN + 2 + 
+        option::LEASE_TIME_LEN + 2 +
         option::IP_LEN + 2 + /* server identifier */
         static_route_len +
+        iface_mtu_len +
         1 /* end */;
-    size_t len = sizeof(struct eth_header) + 
+    size_t len = sizeof(eth::eth_header) +
         sizeof(struct iphdr) +
         sizeof(struct udp_hdr) +
         payloadLen;
@@ -432,8 +537,8 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     ofpbuf_clear(b);
     ofpbuf_reserve(b, len);
     char* buf =  (char*)ofpbuf_push_zeros(b, len);
-    eth = (struct eth_header*)buf;
-    buf += sizeof(struct eth_header);
+    eth = (eth::eth_header*)buf;
+    buf += sizeof(eth::eth_header);
     ip = (struct iphdr*)buf;
     buf += sizeof(struct iphdr);
     udp = (struct udp_hdr*)buf;
@@ -464,24 +569,37 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
         static_routes = (struct dhcp_option_hdr*)buf;
         buf += static_route_len;
     }
+    if (iface_mtu_len > 0) {
+        iface_mtu = (struct dhcp_option_hdr*)buf;
+        buf += iface_mtu_len;
+    }
     end = (struct dhcp_option_hdr_base*)buf;
     buf += 1;
 
     // initialize ethernet header
-    memcpy(eth->eth_src, srcMac, ETH_ADDR_LEN);
-    memset(eth->eth_dst, 0xff, ETH_ADDR_LEN);
-    eth->eth_type = htons(ETH_TYPE_IP);
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memset(eth->eth_dst, 0xff, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::IP);
 
     // initialize IPv4 header
     ip->version = 4;
     ip->ihl = sizeof(struct iphdr)/4;
-    ip->tot_len = htons(payloadLen + 
-                        sizeof(struct iphdr) + 
+    ip->tot_len = htons(payloadLen +
+                        sizeof(struct iphdr) +
                         sizeof(struct udp_hdr));
     ip->ttl = 64;
     ip->protocol = 17;
 
-    ip->saddr = htonl(LINK_LOCAL_DHCP);
+    uint32_t serverIp = LINK_LOCAL_DHCP;
+    if (serverIpStr) {
+        address_v4 sip = address_v4::from_string(serverIpStr.get(), ec);
+        if (ec) {
+            LOG(WARNING) << "Invalid DHCP server IP: " << serverIpStr.get();
+        } else  {
+            serverIp = sip.to_ulong();
+        }
+    }
+    ip->saddr = htonl(serverIp);
     ip->daddr = 0xffffffff;
 
     // compute IP header checksum
@@ -500,8 +618,8 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     dhcp->hlen = 6;
     dhcp->xid = xid;
     dhcp->yiaddr = htonl(clientIp);
-    dhcp->siaddr = htonl(LINK_LOCAL_DHCP);
-    memcpy(dhcp->chaddr, clientMac, ETH_ADDR_LEN);
+    dhcp->siaddr = htonl(serverIp);
+    memcpy(dhcp->chaddr, clientMac, eth::ADDR_LEN);
     dhcp->cookie[0] = 99;
     dhcp->cookie[1] = 130;
     dhcp->cookie[2] = 83;
@@ -523,7 +641,7 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
         routers_opt->len = 4 * routerIps.size();
         uint32_t* ipptr =
             (uint32_t*)((char*)routers_opt + 2);
-        BOOST_FOREACH(const address_v4& ip, routerIps) {
+        for (const address_v4& ip : routerIps) {
             *ipptr = htonl(ip.to_ulong());
             ipptr += 1;
         }
@@ -534,7 +652,7 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
         dns->len = 4 * dnsIps.size();
         uint32_t* ipptr =
             (uint32_t*)((char*)dns + 2);
-        BOOST_FOREACH(const address_v4& ip, dnsIps) {
+        for (const address_v4& ip : dnsIps) {
             *ipptr = htonl(ip.to_ulong());
             ipptr += 1;
         }
@@ -549,17 +667,18 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
 
     lease_time->code = option::LEASE_TIME;
     lease_time->len = option::LEASE_TIME_LEN;
-    *((uint32_t*)((char*)lease_time + 2)) = htonl(86400);
+    *((uint32_t*)((char*)lease_time + 2)) =
+        htonl(leaseTime ? leaseTime.get() : 86400);
 
     server_identifier->code = option::SERVER_IDENTIFIER;
     server_identifier->len = option::IP_LEN;
-    *((uint32_t*)((char*)server_identifier + 2)) = htonl(LINK_LOCAL_DHCP);
+    *((uint32_t*)((char*)server_identifier + 2)) = htonl(serverIp);
 
     if (static_route_len > 0) {
         static_routes->code = option::CLASSLESS_STATIC_ROUTE;
         static_routes->len = static_route_len - 2;
         char* cur = (char*)static_routes + 2;
-        BOOST_FOREACH(const Routev4& route, routes) {
+        for (const Routev4& route : routes) {
             uint8_t octets = (route.prefixLen / 8) + (route.prefixLen % 8 != 0);
             uint32_t dest = htonl(route.dest.to_ulong());
             uint32_t nexthop = htonl(route.nextHop.to_ulong());
@@ -568,7 +687,14 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
                 *cur++ = ((char*)&dest)[i];
             }
             *((uint32_t*)cur) = nexthop;
+            cur += 4;
         }
+    }
+
+    if (iface_mtu_len > 0) {
+        iface_mtu->code = option::INTERFACE_MTU;
+        iface_mtu->len = 2;
+        *((uint16_t*)((char*)iface_mtu + 2)) = htons(interfaceMtu.get());
     }
 
     end->code = option::END;
@@ -584,7 +710,7 @@ ofpbuf* compose_dhcpv4_reply(uint8_t message_type,
     chksum_accum(chksum, (uint16_t*)&proto, 2);
     chksum_accum(chksum, (uint16_t*)&udp->len, 2);
     // payload
-    chksum_accum(chksum, (uint16_t*)udp, 
+    chksum_accum(chksum, (uint16_t*)udp,
                  payloadLen + sizeof(struct udp_hdr));
     udp->chksum = chksum_finalize(chksum);
 
@@ -603,7 +729,11 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
                              const vector<string>& dnsServers,
                              const vector<string>& searchList,
                              bool temporary,
-                             bool rapid) {
+                             bool rapid,
+                             const boost::optional<uint32_t>& t1,
+                             const boost::optional<uint32_t>& t2,
+                             const boost::optional<uint32_t>& preferredLifetime,
+                             const boost::optional<uint32_t>& validLifetime) {
     using namespace dhcp6;
     using namespace udp;
 
@@ -611,7 +741,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     // to run on ARM or Sparc I guess
 
     struct ofpbuf* b = NULL;
-    struct eth_header* eth = NULL;
+    eth::eth_header* eth = NULL;
     struct ip6_hdr* ip6 = NULL;
     struct udp_hdr* udp = NULL;
     struct dhcp6_hdr* dhcp = NULL;
@@ -632,18 +762,18 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     const size_t opt_hdr_len = sizeof(struct dhcp6_opt_hdr);
 
     vector<address_v6> dnsIps;
-    BOOST_FOREACH(const string& ipstr, dnsServers) {
+    for (const string& ipstr : dnsServers) {
         address_v6 ip = address_v6::from_string(ipstr, ec);
         if (ec) continue;
         dnsIps.push_back(ip);
         if (dnsIps.size() >= MAX_IP) break;
     }
-    if (dnsIps.size() >= 0) 
+    if (dnsIps.size() > 0)
         dns_len = opt_hdr_len + sizeof(struct in6_addr) * dnsIps.size();
 
     stringbuf domain_opt_buf;
     size_t domain_opt_len = 0;
-    BOOST_FOREACH(const string& domain, searchList) {
+    for (const string& domain : searchList) {
         if (domain.size() > 255) continue;
         if (domain_opt_len > 512) break;
 
@@ -651,7 +781,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
         split(dchunks, domain, is_any_of("."), token_compress_on);
 
         bool validdomain = true;
-        BOOST_FOREACH(const string& dchunk, dchunks) {
+        for (const string& dchunk : dchunks) {
             if (dchunk.size() > 63) {
                 validdomain = false;
                 break;
@@ -659,7 +789,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
         }
         if (!validdomain || dchunks.size() == 0) continue;
 
-        BOOST_FOREACH(const string& dchunk, dchunks) {
+        for (const string& dchunk : dchunks) {
             domain_opt_buf.sputc((uint8_t)dchunk.size());
             domain_opt_buf.sputn(dchunk.c_str(), dchunk.size());
             domain_opt_len += dchunk.size() + 1;
@@ -676,7 +806,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
         if (!temporary) ia_len += 8;
     }
 
-    size_t payloadLen = 
+    size_t payloadLen =
         sizeof(struct dhcp6_hdr) +
         opt_hdr_len + client_id_len + /* client id */
         opt_hdr_len + 10 + /* server id */
@@ -684,7 +814,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
         domain_list_len +
         ia_len +
         (rapid ? opt_hdr_len : 0);
-    size_t len = sizeof(struct eth_header) + 
+    size_t len = sizeof(eth::eth_header) +
         sizeof(struct ip6_hdr) +
         sizeof(struct udp_hdr) +
         payloadLen;
@@ -694,8 +824,8 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     ofpbuf_clear(b);
     ofpbuf_reserve(b, len);
     char* buf = (char*)ofpbuf_push_zeros(b, len);
-    eth = (struct eth_header*)buf;
-    buf += sizeof(struct eth_header);
+    eth = (eth::eth_header*)buf;
+    buf += sizeof(eth::eth_header);
     ip6 = (struct ip6_hdr*)buf;
     buf += sizeof(struct ip6_hdr);
     udp = (struct udp_hdr*)buf;
@@ -724,18 +854,18 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     }
 
     // initialize ethernet header
-    memcpy(eth->eth_src, srcMac, ETH_ADDR_LEN);
-    memcpy(eth->eth_dst, clientMac, ETH_ADDR_LEN);
-    eth->eth_type = htons(ETH_TYPE_IPV6);
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memcpy(eth->eth_dst, clientMac, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::IPV6);
 
     // Initialize IPv6 header
     ip6->ip6_vfc = 0x60;
     ip6->ip6_hlim = 255;
     ip6->ip6_nxt = 17;
     ip6->ip6_plen = htons(payloadLen + sizeof(udp_hdr));
- 
+
     // IPv6 link-local address made from the DHCP MAC
-    construct_auto_ip(address_v6::from_string("fe80::"), srcMac, 
+    construct_auto_ip(address_v6::from_string("fe80::"), srcMac,
                       &ip6->ip6_src);
 
     memcpy(&ip6->ip6_dst, dstIp, sizeof(struct in6_addr));
@@ -757,7 +887,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     uint16_t* hw_type = duid_type + 1;
     *hw_type = htons(1 /* ethernet */);
     uint8_t* lladdr = (uint8_t*)(hw_type + 1);
-    memcpy(lladdr, srcMac, ETH_ADDR_LEN);
+    memcpy(lladdr, srcMac, eth::ADDR_LEN);
 
     // Client ID
     client_id_opt->option_code = htons(option::CLIENT_IDENTIFIER);
@@ -776,12 +906,12 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
             iaaddr = (struct dhcp6_opt_hdr*)((char*)ia + opt_hdr_len + 4);
         } else {
             iaaddr = (struct dhcp6_opt_hdr*)((char*)ia + opt_hdr_len + 12);
-            uint32_t* t1 = ((uint32_t*)iaid_ptr + 1);
-            uint32_t* t2 = t1 + 1;
-            *t1 = htonl(3600);
-            *t2 = htonl(5400);
+            uint32_t* t1_p = ((uint32_t*)iaid_ptr + 1);
+            uint32_t* t2_p = t1_p + 1;
+            *t1_p = htonl(t1 ? t1.get() : 3600);
+            *t2_p = htonl(t2 ? t2.get() : 5400);
         }
-        BOOST_FOREACH(const address_v6& ip, ips) {
+        for (const address_v6& ip : ips) {
             size_t iaaddr_len = 24;
             iaaddr->option_code = htons(option::IAADDR);
             iaaddr->option_len = htons(iaaddr_len);
@@ -792,8 +922,8 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
             std::memcpy(addr, bytes.data(), bytes.size());
             uint32_t* pl = (uint32_t*)(addr + 1);
             uint32_t* vl = pl + 1;
-            *pl = htonl(7200);
-            *vl = htonl(7500);
+            *pl = htonl(preferredLifetime ? preferredLifetime.get() : 7200);
+            *vl = htonl(validLifetime ? validLifetime.get() : 7500);
 
             iaaddr =
                 (struct dhcp6_opt_hdr*)((char*)iaaddr + opt_hdr_len + iaaddr_len);
@@ -806,7 +936,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
         dns->option_len = htons(sizeof(struct in6_addr) * dnsIps.size());
         struct in6_addr* ipptr =
             (struct in6_addr*)((char*)dns + opt_hdr_len);
-        BOOST_FOREACH(const address_v6& ip, dnsIps) {
+        for (const address_v6& ip : dnsIps) {
             address_v6::bytes_type bytes = ip.to_bytes();
             std::memcpy(ipptr, bytes.data(), bytes.size());
             ipptr += 1;
@@ -830,9 +960,9 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     // compute checksum
     uint32_t chksum = 0;
     // pseudoheader
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_src,
                  sizeof(struct in6_addr));
-    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst, 
+    chksum_accum(chksum, (uint16_t*)&ip6->ip6_dst,
                  sizeof(struct in6_addr));
     uint32_t udpLen = htonl(payloadLen + sizeof(udp_hdr));
     chksum_accum(chksum, (uint16_t*)&udpLen, 4);
@@ -841,7 +971,7 @@ ofpbuf* compose_dhcpv6_reply(uint8_t message_type,
     nh.nh = ip6->ip6_nxt;
     chksum_accum(chksum, (uint16_t*)&nh, 4);
     // payload
-    chksum_accum(chksum, (uint16_t*)udp, 
+    chksum_accum(chksum, (uint16_t*)udp,
                  payloadLen + sizeof(struct udp_hdr));
     udp->chksum = chksum_finalize(chksum);
 
@@ -858,51 +988,124 @@ ofpbuf* compose_arp(uint16_t op,
     using namespace arp;
 
     struct ofpbuf* b = NULL;
-    struct eth_header* eth = NULL;
+    eth::eth_header* eth = NULL;
     struct arp_hdr* arp = NULL;
     uint8_t* shaptr = NULL;
     uint8_t* thaptr = NULL;
     uint32_t* spaptr = NULL;
     uint32_t* tpaptr = NULL;
 
-    size_t len = 
-        sizeof(eth_header) + sizeof(arp_hdr) + 
-        2 * ETH_ADDR_LEN + 2 * 4;
+    size_t len =
+        sizeof(eth::eth_header) + sizeof(arp_hdr) +
+        2 * eth::ADDR_LEN + 2 * 4;
     b = ofpbuf_new(len);
     ofpbuf_clear(b);
     ofpbuf_reserve(b, len);
     char* buf = (char*)ofpbuf_push_zeros(b, len);
-    eth = (struct eth_header*)buf;
-    buf += sizeof(struct eth_header);
+    eth = (eth::eth_header*)buf;
+    buf += sizeof(eth::eth_header);
     arp = (struct arp_hdr*)buf;
     buf += sizeof(struct arp_hdr);
     shaptr = (uint8_t*)buf;
-    buf += ETH_ADDR_LEN;
+    buf += eth::ADDR_LEN;
     spaptr = (uint32_t*)buf;
     buf += 4;
     thaptr = (uint8_t*)buf;
-    buf += ETH_ADDR_LEN;
+    buf += eth::ADDR_LEN;
     tpaptr = (uint32_t*)buf;
     buf += 4;
 
     // initialize ethernet header
-    memcpy(eth->eth_src, srcMac, ETH_ADDR_LEN);
-    memcpy(eth->eth_dst, dstMac, ETH_ADDR_LEN);
-    eth->eth_type = htons(ETH_TYPE_ARP);
+    memcpy(eth->eth_src, srcMac, eth::ADDR_LEN);
+    memcpy(eth->eth_dst, dstMac, eth::ADDR_LEN);
+    eth->eth_type = htons(eth::type::ARP);
 
     // initialize the ARP packet
     arp->htype = htons(1);
     arp->ptype = htons(0x800);
-    arp->hlen = ETH_ADDR_LEN;
+    arp->hlen = eth::ADDR_LEN;
     arp->plen = 4;
     arp->op = htons(op);
 
-    memcpy(shaptr, sha, ETH_ADDR_LEN);
-    memcpy(thaptr, tha, ETH_ADDR_LEN);
+    memcpy(shaptr, sha, eth::ADDR_LEN);
+    memcpy(thaptr, tha, eth::ADDR_LEN);
     *spaptr = htonl(spa);
     *tpaptr = htonl(tpa);
 
     return b;
+}
+
+uint32_t get_subnet_mask_v4(uint8_t prefixLen) {
+    return (prefixLen != 0)
+           ? (~((uint32_t)0) << (32 - prefixLen))
+           : 0;
+}
+
+void get_subnet_mask_v6(uint8_t prefixLen, in6_addr *mask) {
+    if (prefixLen == 0) {
+        memset(mask, 0, sizeof(struct in6_addr));
+    } else if (prefixLen <= 64) {
+        ((uint64_t*)mask)[0] = ovs_htonll(~((uint64_t)0) << (64 - prefixLen));
+        ((uint64_t*)mask)[1] = 0;
+    } else {
+        ((uint64_t*)mask)[0] = ~((uint64_t)0);
+        ((uint64_t*)mask)[1] = ovs_htonll(~((uint64_t)0) << (128 - prefixLen));
+    }
+}
+
+address mask_address(const address& addrIn, uint8_t prefixLen) {
+    if (addrIn.is_v4()) {
+        prefixLen = std::min<uint8_t>(prefixLen, 32);
+        uint32_t mask = get_subnet_mask_v4(prefixLen);
+        return address_v4(addrIn.to_v4().to_ulong() & mask);
+    }
+    struct in6_addr mask;
+    struct in6_addr addr6;
+    prefixLen = std::min<uint8_t>(prefixLen, 128);
+    compute_ipv6_subnet(addrIn.to_v6(), prefixLen, &mask, &addr6);
+    address_v6::bytes_type data;
+    std::memcpy(data.data(), &addr6, sizeof(addr6));
+    return address_v6(data);
+}
+
+bool is_link_local(const boost::asio::ip::address& addr) {
+    if (addr.is_v6() && addr.to_v6().is_link_local())
+        return true;
+    if (addr.is_v4() &&
+        (mask_address(addr, 16) == address::from_string("169.254.0.0")))
+        return true;
+    return false;
+}
+
+bool cidr_from_string(const string& cidrStr, cidr_t& cidr) {
+    vector<string> parts;
+    uint8_t prefixLen = 32;
+
+    split(parts, cidrStr, boost::is_any_of("/"));
+    boost::system::error_code ec;
+    address baseIp = address::from_string(
+        parts.size() == 2 ? parts[0] : cidrStr, ec);
+    if (ec) {
+        return false;
+    }
+
+    if (parts.size() == 2) {
+        try {
+            prefixLen = boost::lexical_cast<uint16_t>(parts[1]);
+        } catch (const boost::bad_lexical_cast& ex) {
+            return false;
+        }
+        baseIp = mask_address(baseIp, prefixLen);
+    } else if (baseIp.is_v6()) {
+        prefixLen = 128;
+    }
+
+    cidr = std::make_pair(baseIp, prefixLen);
+    return true;
+}
+
+bool cidr_contains(const cidr_t& cidr, const address& addr) {
+    return (cidr.first == mask_address(addr, cidr.second));
 }
 
 

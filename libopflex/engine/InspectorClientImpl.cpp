@@ -58,7 +58,8 @@ using internal::OpflexMessage;
 
 InspectorClientImpl::InspectorClientImpl(const std::string& name_,
                                          const modb::ModelMetadata& model)
-    : conn(*this, this, name_), serializer(&db, this), pendingRequests(0) {
+    : conn(*this, this, name_), db(threadManager),
+      serializer(&db, this), pendingRequests(0) {
     db.init(model);
     storeClient = &db.getStoreClient("_SYSTEM_");
 }
@@ -191,8 +192,10 @@ size_t InspectorClientImpl::loadFromFile(FILE* file) {
 
 void InspectorClientImpl::prettyPrint(std::ostream& output,
                                       bool tree,
-                                      bool includeProps) {
-    serializer.displayMODB(output, tree, includeProps);
+                                      bool includeProps,
+                                      bool utf8,
+                                      size_t truncate) {
+    serializer.displayMODB(output, tree, includeProps, utf8, truncate);
 }
 
 void InspectorClientImpl::setFollowRefs(bool enabled) {
@@ -220,7 +223,7 @@ void InspectorClientImpl::remoteObjectUpdated(modb::class_id_t class_id,
 
     try {
         StoreClient& client = db.getReadOnlyStoreClient();
-        boost::shared_ptr<const ObjectInstance> oi = client.get(class_id, uri);
+        OF_SHARED_PTR<const ObjectInstance> oi = client.get(class_id, uri);
         const ClassInfo& ci = db.getClassInfo(class_id);
         BOOST_FOREACH(const ClassInfo::property_map_t::value_type& p,
                       ci.getProperties()) {

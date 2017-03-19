@@ -14,11 +14,13 @@
 #ifndef MODB_URI_H
 #define MODB_URI_H
 
-#include <boost/shared_ptr.hpp>
 #include <boost/any.hpp>
 #include <boost/functional/hash.hpp>
+
 #include <string>
 #include <vector>
+
+#include "opflex/ofcore/OFTypes.h"
 
 namespace opflex {
 namespace modb {
@@ -43,7 +45,7 @@ public:
     /**
      * Construct a URI using the given string representation
      */
-    explicit URI(const boost::shared_ptr<const std::string>& uri);
+    explicit URI(const OF_SHARED_PTR<const std::string>& uri);
 
     /**
      * Construct a URI using the given string representation
@@ -82,7 +84,7 @@ public:
     static const URI ROOT;
 
 private:
-    boost::shared_ptr<const std::string> uri;
+    OF_SHARED_PTR<const std::string> uri;
     size_t hashv;
 
     friend bool operator==(const URI& lhs, const URI& rhs);
@@ -110,7 +112,7 @@ bool operator!=(const URI& lhs, const URI& rhs);
 bool operator<(const URI& lhs, const URI& rhs);
 /**
  * Compute a hash value for the URI, making URI suitable as a key in
- * an unordered_map
+ * a boost::unordered_map
  */
 size_t hash_value(URI const& uri);
 
@@ -119,5 +121,22 @@ size_t hash_value(URI const& uri);
 
 } /* namespace modb */
 } /* namespace opflex */
+
+#if __cplusplus > 199711L
+
+namespace std {
+/**
+ * Template specialization for std::hash<opflex::modb::URI>, making
+ * URI suitable as a key in a std::unordered_map
+ */
+template<> struct hash<opflex::modb::URI> {
+    /**
+     * Hash the opflex::modb::URI
+     */
+    std::size_t operator()(const opflex::modb::URI& u) const;
+};
+} /* namespace std */
+
+#endif
 
 #endif /* MODB_URI_H */

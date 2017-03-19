@@ -5,10 +5,12 @@ import java.util.Collection;
 import org.opendaylight.opflex.genie.content.format.agent.consts.cpp.FEnumDef;
 import org.opendaylight.opflex.genie.content.model.mclass.MClass;
 import org.opendaylight.opflex.genie.content.model.module.Module;
-import org.opendaylight.opflex.genie.content.model.mprop.MProp;
-import org.opendaylight.opflex.genie.content.model.mtype.MType;
 import org.opendaylight.opflex.genie.engine.file.WriteStats;
-import org.opendaylight.opflex.genie.engine.format.*;
+import org.opendaylight.opflex.genie.engine.format.BlockFormatDirective;
+import org.opendaylight.opflex.genie.engine.format.FileNameRule;
+import org.opendaylight.opflex.genie.engine.format.FormatterCtx;
+import org.opendaylight.opflex.genie.engine.format.GenericFormatterTask;
+import org.opendaylight.opflex.genie.engine.format.Indenter;
 import org.opendaylight.opflex.genie.engine.model.Item;
 import org.opendaylight.opflex.genie.engine.model.Pair;
 import org.opendaylight.opflex.genie.engine.proc.Config;
@@ -117,6 +119,7 @@ public class FAutomakeDef
         out.println(ainIndent, aInLibName + "_la_CXXFLAGS = -I$(top_srcdir)/include $(libopflex_CFLAGS)");
         out.println(ainIndent, aInLibName + "_la_SOURCES = src/metadata.cpp");
         out.println(ainIndent, aInLibName + "_la_LIBADD = $(libopflex_LIBS)");
+        out.println(ainIndent, aInLibName + "_la_LDFLAGS = -version-info ${VERSION_INFO}");
         out.println();
         out.println(ainIndent, "pkgconfigdir = $(libdir)/pkgconfig");
         out.println(ainIndent, "pkgconfig_DATA = " + aInLibName + ".pc");
@@ -167,7 +170,7 @@ public class FAutomakeDef
         out.println();
 
         out.println(ainIndent, "# Set env var DEB_BUILD_OPTIONS=\"parallel=<#cores>\" to speed up package builds");
-        out.println(ainIndent, "DEB_PKG_DIR=deb");
+        out.println(ainIndent, "DEB_PKG_DIR=deb-pkg-build");
         out.println(ainIndent, "deb: dist");
         out.println(ainIndent + 1, "- rm -rf  $(DEB_PKG_DIR)");
         out.println(ainIndent + 1, "mkdir -p $(DEB_PKG_DIR)");
@@ -175,9 +178,17 @@ public class FAutomakeDef
         out.println(ainIndent + 1, "tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)");
         out.println(ainIndent + 1, "mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz");
         out.println(ainIndent + 1, "cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; " +
-                                   "VERSION_WITH_BUILD=$(VERSION)-$(SDK_BVERSION) " +
-                                   "dpkg-buildpackage -d -us -uc -rfakeroot -b");
+                                   "dpkg-buildpackage -us -uc -rfakeroot -b");
         out.println(ainIndent + 1, "cp $(DEB_PKG_DIR)/*.deb .");
         out.println(ainIndent + 1, "rm -rf $(DEB_PKG_DIR)");
+
+        out.println(ainIndent, "dsc: dist");
+        out.println(ainIndent + 1, "- rm -rf  $(DEB_PKG_DIR)");
+        out.println(ainIndent + 1, "mkdir -p $(DEB_PKG_DIR)");
+        out.println(ainIndent + 1, "cp $(SOURCE_FILE) $(DEB_PKG_DIR)/");
+        out.println(ainIndent + 1, "tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)");
+        out.println(ainIndent + 1, "mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz");
+        out.println(ainIndent + 1, "cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; " +
+                                   "dpkg-buildpackage -d -us -uc -rfakeroot -S");
     }
 }

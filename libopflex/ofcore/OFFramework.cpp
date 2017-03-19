@@ -27,6 +27,8 @@
 #include "opflex/engine/Inspector.h"
 #include "opflex/logging/internal/logging.hpp"
 
+#include "ThreadManager.h"
+
 namespace opflex {
 namespace ofcore {
 
@@ -38,9 +40,10 @@ using std::string;
 class OFFramework::OFFrameworkImpl {
 public:
     OFFrameworkImpl()
-        : processor(&db), started(false) { }
+        : db(threadManager), processor(&db, threadManager), started(false) { }
     ~OFFrameworkImpl() {}
 
+    util::ThreadManager threadManager;
     modb::ObjectStore db;
     engine::Processor processor;
     scoped_ptr<engine::Inspector> inspector;
@@ -82,17 +85,25 @@ void OFFramework::start() {
         pimpl->inspector->start();
 }
 
+MainLoopAdaptor* OFFramework::startSync() {
+    MainLoopAdaptor* adaptor = pimpl->threadManager.getAdaptor();
+    start();
+    return adaptor;
+}
+
 void OFFramework::stop() {
     if (pimpl->inspector) {
+        LOG(DEBUG) << "Stopping OpFlex Inspector";
         pimpl->inspector->stop();
         pimpl->inspector.reset();
     }
     if (pimpl->started) {
         LOG(DEBUG) << "Stopping OpFlex Framework";
-        
+
         pimpl->processor.stop();
         pimpl->db.stop();
     }
+    pimpl->threadManager.stop();
     pimpl->started = false;
 }
 
@@ -104,6 +115,15 @@ void OFFramework::dumpMODB(const std::string& file) {
 void OFFramework::dumpMODB(FILE* file) {
     MOSerializer& serializer = pimpl->processor.getSerializer();
     serializer.dumpMODB(file);
+}
+
+void OFFramework::prettyPrintMODB(std::ostream& output,
+                                  bool tree,
+                                  bool includeProps,
+                                  bool utf8,
+                                  size_t truncate) {
+    MOSerializer& serializer = pimpl->processor.getSerializer();
+    serializer.displayMODB(output, tree, includeProps, utf8, truncate);
 }
 
 void OFFramework::setOpflexIdentity(const std::string& name,
@@ -119,7 +139,18 @@ void OFFramework::setOpflexIdentity(const std::string& name,
 
 void OFFramework::enableSSL(const std::string& caStorePath,
                             bool verifyPeers) {
-    pimpl->processor.enableSSL(caStorePath, verifyPeers);
+    pimpl->processor.enableSSL(caStorePath,
+                               verifyPeers);
+}
+
+void OFFramework::enableSSL(const std::string& caStorePath,
+                            const std::string& keyAndCertFilePath,
+                            const std::string& passphrase,
+                            bool verifyPeers) {
+    pimpl->processor.enableSSL(caStorePath,
+                               keyAndCertFilePath,
+                               passphrase,
+                               verifyPeers);
 }
 
 void OFFramework::enableInspector(const std::string& socketName) {
@@ -146,6 +177,7 @@ void MockOFFramework::stop() {
     LOG(DEBUG) << "Stopping OpFlex Framework";
 
     pimpl->db.stop();
+    pimpl->threadManager.stop();
 }
 
 modb::ObjectStore& OFFramework::getStore() {
