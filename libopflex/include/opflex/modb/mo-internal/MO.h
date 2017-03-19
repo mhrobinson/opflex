@@ -167,7 +167,7 @@ protected:
             class_id_t class_id,
             const URI& uri) {
         try {
-            return OF_MAKE_SHARED<T>(framework, uri,
+            return OF_MAKE_SHARED<T>(boost::ref(framework), uri,
                                      resolveOI(framework, class_id, uri));
         } catch (std::out_of_range e) {
             return boost::none;

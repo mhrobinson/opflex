@@ -20,9 +20,6 @@
 #include <sstream>
 
 #include <boost/algorithm/string/split.hpp>
-#if __cplusplus <= 199711L
-#include <boost/make_shared.hpp>
-#endif
 
 #include "opflex/modb/URI.h"
 
